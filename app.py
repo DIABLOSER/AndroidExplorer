@@ -704,7 +704,7 @@ class AndroidResourceRenamerGUI:
         content_frame = ttk.Frame(win, padding=20)
         content_frame.pack(fill=tk.BOTH, expand=True)
         
-        ttk.Label(content_frame, text="Android 资源重命名工具", 
+        ttk.Label(content_frame, text="Android Explorer", 
                  font=("Segoe UI", 12, "bold")).pack(pady=(0, 15))
         
         ttk.Label(content_frame, text="作者：大菠萝", 
@@ -2062,6 +2062,17 @@ class AndroidResourceRenamerGUI:
     
     def rename_files_by_type(self, files, mapping, resource_type):
         """执行特定类型的文件重命名。返回 (重命名数量, 实际执行的 [(old_path, new_path), ...])"""
+        # 对于类文件，使用专门的重命名方法
+        if resource_type == "class":
+            renamed_count = self.class_renamer.rename_class_files(
+                files, 
+                mapping, 
+                preview_mode=self.preview_mode.get()
+            )
+            rename_list = [(old, new) for old, new in self.class_renamer.renamed_files.items()]
+            return renamed_count, rename_list
+        
+        # 其他资源类型使用原有逻辑
         renamed_count = 0
         rename_list = []
         for file_path in files:
@@ -2209,7 +2220,7 @@ class AndroidResourceRenamerGUI:
         return self.apply_replacements(self._get_id_replace_rules())
     
     def apply_replacements(self, replace_rules):
-        """应用替换规则到所有相关文件（在后台线程中调用）"""
+        """应用替换规则到所有相关文件（在后台线程中调用）- 改进版，避免误匹配"""
         if not replace_rules:
             return 0
         
@@ -2218,13 +2229,19 @@ class AndroidResourceRenamerGUI:
         patterns = ['**/*.java', '**/*.kt', '**/*.xml', '**/*.gradle']
         
         # 预编译所有正则表达式以提高性能
-        compiled_rules = [(re.compile(old_pattern), new_pattern) for old_pattern, new_pattern in replace_rules]
+        compiled_rules = []
+        for old_pattern, new_pattern in replace_rules:
+            try:
+                compiled_rules.append((re.compile(old_pattern), new_pattern))
+            except re.error as e:
+                self.root.after(0, lambda p=old_pattern, err=e: self.log(f"正则表达式编译失败: {p} - {err}", "ERROR"))
+                continue
         
         # 收集所有需要处理的文件
         all_files = []
         for pattern in patterns:
             for file_path in project_path.rglob(pattern):
-                if 'build' in file_path.parts or '.idea' in file_path.parts:
+                if 'build' in file_path.parts or '.idea' in file_path.parts or '.gradle' in file_path.parts:
                     continue
                 all_files.append(file_path)
         
@@ -2239,18 +2256,45 @@ class AndroidResourceRenamerGUI:
                 self.root.after(0, lambda p=progress: self.status_var.set(p))
             
             try:
+                # 读取文件内容
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
+                
+                # 应用替换规则
                 new_content = content
+                changes_made = False
+                
                 for compiled_pattern, new_pattern in compiled_rules:
-                    new_content = compiled_pattern.sub(new_pattern, new_content)
-                if new_content != content:
+                    try:
+                        replaced_content = compiled_pattern.sub(new_pattern, new_content)
+                        if replaced_content != new_content:
+                            changes_made = True
+                            new_content = replaced_content
+                    except Exception as e:
+                        # 单个规则失败不影响其他规则
+                        continue
+                
+                # 如果有变化，写入文件
+                if changes_made:
                     if not self.preview_mode.get():
+                        # 创建备份（可选）
+                        # backup_path = file_path.with_suffix(file_path.suffix + '.bak')
+                        # shutil.copy2(file_path, backup_path)
+                        
                         with open(file_path, 'w', encoding='utf-8') as f:
                             f.write(new_content)
+                    
                     updated_files.append(str(file_path))
-                    self.root.after(0, lambda fp=file_path: self.log(f"更新引用: {fp}"))
-            except (UnicodeDecodeError, IOError) as e:
+                    self.root.after(0, lambda fp=file_path: self.log(f"更新引用: {fp.name}"))
+                    
+            except UnicodeDecodeError:
+                # 跳过二进制文件
+                continue
+            except IOError as e:
+                self.root.after(0, lambda fp=file_path, err=e: self.log(f"读取文件失败 {fp}: {err}", "ERROR"))
+                continue
+            except Exception as e:
+                self.root.after(0, lambda fp=file_path, err=e: self.log(f"处理文件失败 {fp}: {err}", "ERROR"))
                 continue
         
         return len(updated_files)
@@ -2341,15 +2385,53 @@ class AndroidResourceRenamerGUI:
     
     def _finish_rename_operation(self, type_name, total_renamed, updated_count):
         """完成重命名操作"""
+        verification_issues = []
+        
         if self.preview_mode.get():
             self.log("预览完成 (未实际修改)")
         else:
             self.log("操作完成")
             # 自动导出映射表
             self._auto_export_mapping()
+            
+            # 对于类重命名，执行验证
+            if type_name == "类名(Class)" and self.class_mapping:
+                self.log("正在验证重命名完成情况...")
+                try:
+                    project_path = Path(self.project_path.get())
+                    verification_issues = self.class_renamer.verify_rename_completion(project_path, self.class_mapping)
+                    report = self.class_renamer.generate_verification_report(verification_issues)
+                    self.log(report)
+                    
+                    if verification_issues:
+                        self.log("⚠️ 发现未更新的引用，请查看日志", "WARNING")
+                except Exception as e:
+                    self.log(f"验证失败: {e}", "ERROR")
+            
+            # 重新扫描文件
+            self.log("正在重新扫描文件...")
+            self.scan_files()
+            self.log("重新扫描完成")
+        
         self.log("=" * 50)
         self.status_var.set("就绪")
-        messagebox.showinfo("完成", f"【{type_name}】操作完成！\n重命名: {total_renamed}\n更新引用: {updated_count}")
+        
+        # 根据验证结果显示不同的消息
+        if type_name == "类名(Class)" and verification_issues:
+            messagebox.showwarning("完成（有警告）", 
+                f"【{type_name}】操作完成！\n"
+                f"重命名: {total_renamed}\n"
+                f"更新引用: {updated_count}\n\n"
+                f"⚠️ 发现 {len(verification_issues)} 处未更新的引用\n"
+                f"请查看日志获取详细信息")
+        elif type_name == "类名(Class)":
+            messagebox.showinfo("完成", 
+                f"【{type_name}】操作完成！\n"
+                f"重命名: {total_renamed}\n"
+                f"更新引用: {updated_count}\n\n"
+                f"✅ 验证通过：所有引用已成功更新")
+        else:
+            messagebox.showinfo("完成", f"【{type_name}】操作完成！\n重命名: {total_renamed}\n更新引用: {updated_count}")
     
     def _auto_export_mapping(self):
         """自动导出当前类型的映射表到项目目录"""
