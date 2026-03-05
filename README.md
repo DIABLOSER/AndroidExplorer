@@ -1,6 +1,22 @@
-# Android 资源重命名工具 v3.2.1
+<div align="center">
+  <img src="https://github.com/DIABLOSER/AndroidExplorer/blob/main/logo.png" alt="Android Explorer Logo" width="200"/>
+  
+  <h1>Android 资源重命名工具</h1>
+  <p><strong>v3.2.1</strong></p>
+  
+  <p>一个功能强大的Android资源文件批量重命名工具，支持Drawable、Layout、String、ID和Java类的智能重命名，并自动更新所有引用。</p>
+  
+  <p>
+    <a href="#-v321-新特性">新特性</a> •
+    <a href="#使用方法">使用方法</a> •
+    <a href="#功能特性">功能特性</a> •
+    <a href="#测试结果">测试结果</a> •
+    <a href="#常见问题">常见问题</a> •
+    <a href="#文档索引">文档</a>
+  </p>
+</div>
 
-一个功能强大的Android资源文件批量重命名工具，支持Drawable、Layout、String、ID和Java类的智能重命名，并自动更新所有引用。
+---
 
 ## 🎉 v3.2.1 新特性
 
