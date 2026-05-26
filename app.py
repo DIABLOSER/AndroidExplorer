@@ -9,22 +9,22 @@ from pathlib import Path
 import random
 import string
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import datetime
 import xml.etree.ElementTree as ET
 
 # 导入核心模块
-from core import ResourceScanner, ResourceRenamer, ClassRenamer
+from core import ResourceScanner, ResourceRenamer, ClassRenamer, ResourceUsageChecker
 # 导入UI组件
-from ui import ToolTip, ThemeManager
+from ui import ToolTip, ThemeManager, FormatPanelBuilder, ScrollableFrame
 # 导入工具函数
-from utils import FormatHelper, FileHelper
+from utils import FormatHelper, FileHelper, ReferenceUpdater
 
 
 class AndroidResourceRenamerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Android Explorer v1.0")
+        self.root.title("Android Explorer v3.3")
         self.root.geometry("1100x780")
         self.root.minsize(900, 600)
         
@@ -46,33 +46,47 @@ class AndroidResourceRenamerGUI:
         # Performance flag for resize events
         self._is_resizing = False
         self._resize_timer = None
+        self._format_preview_timer = None
         
         # Drawable相关变量
-        self.drawable_prefix = tk.StringVar(value="icon_")
-        self.drawable_keyword = tk.StringVar(value="{name}_")
-        self.drawable_suffix = tk.StringVar(value="{number:04d}")
-        self.drawable_format_type = tk.StringVar(value="prefix_keyword_number")  # 格式类型
+        self.drawable_prefix = tk.StringVar(value="icon")
+        self.drawable_keyword = tk.StringVar(value="{name}")
+        self.drawable_suffix = tk.StringVar(value="{random}")
+        self.drawable_number = tk.StringVar(value="{number:04d}")
+        self.drawable_order_mode = tk.StringVar(value="fixed")
+        self.drawable_part_order = tk.StringVar(value=FormatHelper.DEFAULT_PART_ORDER)
         
         # Layout相关变量
-        self.layout_prefix = tk.StringVar(value="activity_")
-        self.layout_keyword = tk.StringVar(value="{name}_")
-        self.layout_suffix = tk.StringVar(value="{number:04d}")
-        self.layout_format_type = tk.StringVar(value="prefix_keyword_number")
+        self.layout_prefix = tk.StringVar(value="activity")
+        self.layout_keyword = tk.StringVar(value="{name}")
+        self.layout_suffix = tk.StringVar(value="{random}")
+        self.layout_number = tk.StringVar(value="{number:04d}")
+        self.layout_order_mode = tk.StringVar(value="fixed")
+        self.layout_part_order = tk.StringVar(value=FormatHelper.DEFAULT_PART_ORDER)
 
         # String资源相关变量
-        self.string_prefix = tk.StringVar(value="str_")
-        self.string_keyword = tk.StringVar(value="{name}_")
-        self.string_suffix = tk.StringVar(value="{number:04d}")
-        self.string_format_type = tk.StringVar(value="prefix_keyword_number")
+        self.string_prefix = tk.StringVar(value="str")
+        self.string_keyword = tk.StringVar(value="{name}")
+        self.string_suffix = tk.StringVar(value="{random}")
+        self.string_number = tk.StringVar(value="{number:04d}")
+        self.string_order_mode = tk.StringVar(value="fixed")
+        self.string_part_order = tk.StringVar(value=FormatHelper.DEFAULT_PART_ORDER)
         self.string_mapping = OrderedDict()
         self.string_files = []
         self.string_entries = []  # 从 values/strings.xml 解析出的 (name, value_preview) 列表
+        self.string_sources = defaultdict(list)  # string name -> [strings.xml 路径]
+
+        # 资源使用情况（资源/布局/字符）
+        self._usage_status = {'drawable': {}, 'layout': {}, 'string': {}}
+        self._usage_unused = {'drawable': {}, 'layout': {}, 'string': {}}
 
         # ID资源相关变量（来自 layout/*.xml 的 @+id/...）
-        self.id_prefix = tk.StringVar(value="id_")
-        self.id_keyword = tk.StringVar(value="{name}_")
-        self.id_suffix = tk.StringVar(value="{number:04d}")
-        self.id_format_type = tk.StringVar(value="prefix_keyword_number")
+        self.id_prefix = tk.StringVar(value="id")
+        self.id_keyword = tk.StringVar(value="{name}")
+        self.id_suffix = tk.StringVar(value="{random}")
+        self.id_number = tk.StringVar(value="{number:04d}")
+        self.id_order_mode = tk.StringVar(value="fixed")
+        self.id_part_order = tk.StringVar(value=FormatHelper.DEFAULT_PART_ORDER)
         self.id_mapping = OrderedDict()
         self.id_entries = []
         self.id_layout_files = []
@@ -80,11 +94,20 @@ class AndroidResourceRenamerGUI:
         # Java类相关变量
         self.class_prefix = tk.StringVar(value="")
         self.class_keyword = tk.StringVar(value="{name}")
-        self.class_suffix = tk.StringVar(value="{number:04d}")
-        self.class_format_type = tk.StringVar(value="prefix_keyword_number")
-        self.class_filter_chars = tk.StringVar(value="")  # 要过滤的字符
+        self.class_suffix = tk.StringVar(value="{random}")
+        self.class_number = tk.StringVar(value="{number:04d}")
+        self.class_order_mode = tk.StringVar(value="fixed")
+        self.class_part_order = tk.StringVar(value=FormatHelper.DEFAULT_PART_ORDER)
+        self.class_filter_chars = tk.StringVar(value="")  # 类名过滤字符
+        self.class_replace_chars = tk.StringVar(value="")  # 类名替换规则
         self.class_mapping = OrderedDict()
         self.class_files = []  # Java文件列表
+        
+        # 随机字符配置变量
+        self.random_length = tk.IntVar(value=4)  # 随机字符长度
+        self.random_include_lowercase = tk.BooleanVar(value=True)  # 包含小写字母
+        self.random_include_uppercase = tk.BooleanVar(value=False)  # 包含大写字母
+        self.random_include_digits = tk.BooleanVar(value=False)  # 包含数字
         
         # Preview label attributes (initialized as None to prevent AttributeError)
         self.drawable_format_preview = None
@@ -105,49 +128,49 @@ class AndroidResourceRenamerGUI:
         self.layout_files = []
         self.mapping_file_path = None
 
-        # 主题: Light / Dark
-        self.theme_mode = tk.StringVar(value="Light")
-        
-        # 初始化主题管理器
+        # 主题: Light / Dark（默认 VS Code 暗色）
+        self.theme_mode = tk.StringVar(value="Dark")
+
         self.theme_manager = ThemeManager(self.theme_mode)
-        
-        # 设置主题颜色（用于向后兼容）
-        self._setup_theme_colors()
 
         # 拆分后的工具类
         self.scanner = ResourceScanner(self.module_selection, self.module_paths, log_func=self.log)
         self.renamer = ResourceRenamer(log_func=self.log)
         self.class_renamer = ClassRenamer(log_func=self.log)
+        self.usage_checker = ResourceUsageChecker(log_func=self.log)
 
         # 创建界面
         self.create_widgets()
         
         # 绑定事件
-        self.drawable_prefix.trace('w', lambda *args: self.update_drawable_format())
-        self.drawable_keyword.trace('w', lambda *args: self.update_drawable_format())
-        self.drawable_suffix.trace('w', lambda *args: self.update_drawable_format())
-        self.drawable_format_type.trace('w', lambda *args: self.update_drawable_format_preset())
+        for _trace_vars, _updater in [
+            ((self.drawable_prefix, self.drawable_keyword, self.drawable_suffix,
+              self.drawable_number, self.drawable_order_mode, self.drawable_part_order),
+             'drawable'),
+            ((self.layout_prefix, self.layout_keyword, self.layout_suffix,
+              self.layout_number, self.layout_order_mode, self.layout_part_order),
+             'layout'),
+            ((self.string_prefix, self.string_keyword, self.string_suffix,
+              self.string_number, self.string_order_mode, self.string_part_order),
+             'string'),
+            ((self.id_prefix, self.id_keyword, self.id_suffix,
+              self.id_number, self.id_order_mode, self.id_part_order),
+             'id'),
+            ((self.class_prefix, self.class_keyword, self.class_suffix,
+              self.class_number, self.class_order_mode, self.class_part_order),
+             'class'),
+        ]:
+            for var in _trace_vars:
+                var.trace('w', lambda *args, t=_updater: self._schedule_format_preview(t))
+        self.class_filter_chars.trace('w', lambda *args: self._schedule_format_preview('class'))
+        self.class_replace_chars.trace('w', lambda *args: self._schedule_format_preview('class'))
         
-        self.layout_prefix.trace('w', lambda *args: self.update_layout_format())
-        self.layout_keyword.trace('w', lambda *args: self.update_layout_format())
-        self.layout_suffix.trace('w', lambda *args: self.update_layout_format())
-        self.layout_format_type.trace('w', lambda *args: self.update_layout_format_preset())
-        
-        self.string_prefix.trace('w', lambda *args: self.update_string_format())
-        self.string_keyword.trace('w', lambda *args: self.update_string_format())
-        self.string_suffix.trace('w', lambda *args: self.update_string_format())
-        self.string_format_type.trace('w', lambda *args: self.update_string_format_preset())
-
-        self.id_prefix.trace('w', lambda *args: self.update_id_format())
-        self.id_keyword.trace('w', lambda *args: self.update_id_format())
-        self.id_suffix.trace('w', lambda *args: self.update_id_format())
-        self.id_format_type.trace('w', lambda *args: self.update_id_format_preset())
-        
-        self.class_prefix.trace('w', lambda *args: self.update_class_format())
-        self.class_keyword.trace('w', lambda *args: self.update_class_format())
-        self.class_suffix.trace('w', lambda *args: self.update_class_format())
-        self.class_format_type.trace('w', lambda *args: self.update_class_format_preset())
-        self.class_filter_chars.trace('w', lambda *args: self.update_class_format())
+        # 随机字符配置变更时更新所有格式预览（防抖）
+        for _rv in (
+            self.random_length, self.random_include_lowercase,
+            self.random_include_uppercase, self.random_include_digits,
+        ):
+            _rv.trace('w', lambda *args: self._schedule_format_preview_all())
         
         self.resource_type.trace('w', lambda *args: self.on_resource_type_change())
         # 模块变更时重新扫描
@@ -163,85 +186,248 @@ class AndroidResourceRenamerGUI:
         self.update_id_format()
         self.update_class_format()
 
-    def _setup_theme_colors(self):
-        """主题色表（参考 VS Code）"""
-        self._theme_light = {
-            "main": "#ffffff", "menubar": "#f3f3f3", "menubar_fg": "#333333",
-            "sidebar": "#f3f3f3", "sidebar_btn": "#e8e8e8", "sidebar_btn_active": "#094771",
-            "sidebar_border": "#e0e0e0", "listbox": "#ffffff", "listbox_fg": "#333333",
-            "listbox_sel": "#094771", "listbox_sel_fg": "#ffffff",
-            "editor": "#ffffff", "editor_fg": "#333333", "editor_border": "#e0e0e0",
-            "statusbar": "#007acc", "statusbar_fg": "#ffffff", "tab_bg": "#f3f3f3", "tab_fg": "#333333",
-        }
-        self._theme_dark = {
-            "main": "#1e1e1e", "menubar": "#323233", "menubar_fg": "#cccccc",
-            "sidebar": "#252526", "sidebar_btn": "#2d2d30", "sidebar_btn_active": "#0e639c",
-            "sidebar_border": "#3c3c3c", "listbox": "#252526", "listbox_fg": "#cccccc",
-            "listbox_sel": "#094771", "listbox_sel_fg": "#ffffff",
-            "editor": "#1e1e1e", "editor_fg": "#d4d4d4", "editor_border": "#3c3c3c",
-            "statusbar": "#007acc", "statusbar_fg": "#ffffff", "tab_bg": "#252526", "tab_fg": "#cccccc",
-        }
-        self._theme_light_fg = {
-            "menubar": "#333333", "sidebar_btn": "#333333", "sidebar_btn_active": "#ffffff",
-            "editor": "#333333", "listbox": "#333333", "listbox_sel": "#ffffff"
-        }
+    def _bg(self, key):
+        return self.theme_manager.get_bg(key)
+
+    def _fg(self, key):
+        return self.theme_manager.get_fg(key)
+
+    def _border(self):
+        return self.theme_manager.get_border()
+
+    def _hline(self, parent):
+        tk.Frame(parent, height=1, bg=self._border()).pack(fill=tk.X)
+
+    def _vline(self, parent, side=tk.RIGHT):
+        tk.Frame(parent, width=1, bg=self._border()).pack(side=side, fill=tk.Y)
+
+    def _vsep(self, parent, padx=4, pady=6):
+        """菜单栏等处的竖向细分隔"""
+        tk.Frame(parent, width=1, bg=self._border()).pack(
+            side=tk.LEFT, fill=tk.Y, padx=padx, pady=pady,
+        )
+
+    def _section_title(self, parent, text, bg_key="main", textvariable=None):
+        """VS Code 式小节标题：无底色条、无下划线"""
+        hint = self.theme_manager.get_bg("hint_fg")
+        kw = dict(
+            font=("Segoe UI", 9), bg=self._bg(bg_key), fg=hint, anchor="w",
+        )
+        if textvariable is not None:
+            lbl = tk.Label(parent, textvariable=textvariable, **kw)
+        else:
+            lbl = tk.Label(parent, text=text, **kw)
+        lbl.pack(fill=tk.X, padx=8, pady=(6, 2))
+        return lbl
+
+    def _listbox_kwargs(self):
+        return dict(
+            bg=self._bg("listbox"), fg=self._fg("listbox"),
+            selectbackground=self._bg("listbox_sel"),
+            selectforeground=self._fg("listbox_sel"),
+            bd=0, highlightthickness=0,
+            activestyle='none',
+        )
+
+    def _text_kwargs(self):
+        return dict(
+            bg=self._bg("editor"), fg=self._fg("editor"),
+            insertbackground=self._fg("editor"),
+            selectbackground=self._bg("listbox_sel"),
+            selectforeground=self._fg("listbox_sel"),
+            bd=0, relief=tk.FLAT, highlightthickness=0,
+        )
+
+    def _create_editor(self, parent, show_scrollbar=True, line_numbers=False, **text_options):
+        """Text + ttk 垂直滚动条；line_numbers 为映射区显示行号栏"""
+        container = tk.Frame(parent, bg=self._bg("editor"))
+        container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+
+        kw = self._text_kwargs()
+        kw.update(text_options)
+        editor_font = kw.get("font", ("Consolas", 10))
+        text = tk.Text(container, **kw)
+
+        gutter = None
+        if line_numbers:
+            gutter = tk.Text(
+                container, width=4,
+                font=editor_font, bg=self._bg("gutter"),
+                fg=self.theme_manager.get_bg("hint_fg"),
+                state=tk.DISABLED, relief=tk.FLAT, bd=0,
+                highlightthickness=0, cursor="arrow", takefocus=0,
+                padx=6, pady=0, spacing1=0, spacing2=0, spacing3=0,
+            )
+            gutter.pack(side=tk.LEFT, fill=tk.Y)
+            tk.Frame(container, width=1, bg=self._border()).pack(side=tk.LEFT, fill=tk.Y)
+            gutter.bind("<MouseWheel>", lambda e: text.yview_scroll(
+                -1 * (e.delta // 120) if e.delta else 0, "units",
+            ))
+            text._line_gutter = gutter
+
+        vbar = ttk.Scrollbar(
+            container, orient=tk.VERTICAL, style="Editor.Vertical.TScrollbar",
+        )
+
+        def _yscroll(first, last):
+            vbar.set(first, last)
+            if gutter is not None:
+                gutter.yview_moveto(first)
+
+        text.configure(yscrollcommand=_yscroll)
+        vbar.configure(command=text.yview)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _sync_scrollbar(*_args):
+            if not show_scrollbar:
+                vbar.pack_forget()
+                return
+            text.update_idletasks()
+            first, last = text.yview()
+            needs = float(first) > 0.0 or float(last) < 1.0
+            if needs:
+                if not vbar.winfo_ismapped():
+                    vbar.pack(side=tk.RIGHT, fill=tk.Y)
+            else:
+                vbar.pack_forget()
+
+        def _schedule_sync(_event=None):
+            text.after_idle(_sync_scrollbar)
+            if line_numbers:
+                text.after_idle(lambda: self._sync_line_numbers(text))
+
+        text.bind("<<Modified>>", _schedule_sync)
+        text.bind("<Configure>", _schedule_sync)
+        text.bind("<KeyRelease>", _schedule_sync)
+        text.bind("<MouseWheel>", lambda _e: text.after_idle(_sync_scrollbar))
+        container._editor_vbar = vbar
+        container._sync_scrollbar = _sync_scrollbar
+        text._editor_container = container
+        text.after_idle(_sync_scrollbar)
+        if line_numbers:
+            text.after_idle(lambda: self._sync_line_numbers(text))
+        return text
+
+    def _sync_line_numbers(self, text_widget):
+        """刷新行号栏（与映射编辑区行数对齐）"""
+        gutter = getattr(text_widget, "_line_gutter", None)
+        if gutter is None:
+            return
+        try:
+            end_line = int(text_widget.index("end-1c").split(".")[0])
+        except (tk.TclError, ValueError):
+            end_line = 1
+        end_line = max(1, end_line)
+        width = max(3, len(str(end_line)) + 1)
+        gutter.configure(width=width, state=tk.NORMAL)
+        gutter.delete("1.0", tk.END)
+        nums = "\n".join(f"{i:>{len(str(end_line))}}" for i in range(1, end_line + 1))
+        gutter.insert("1.0", nums)
+        gutter.configure(state=tk.DISABLED)
+        try:
+            gutter.yview_moveto(text_widget.yview()[0])
+        except tk.TclError:
+            pass
+
+    def _sync_editor_scrollbar(self, text_widget):
+        container = getattr(text_widget, '_editor_container', None)
+        sync = getattr(container, '_sync_scrollbar', None)
+        if sync:
+            sync()
 
     def _menu_file(self):
         """顶部菜单：文件（浏览项目）"""
         self.browse_project()
 
+    def _schedule_format_preview(self, type_name):
+        """格式预览防抖，减少输入时 UI 卡顿"""
+        if self._format_preview_timer is not None:
+            self.root.after_cancel(self._format_preview_timer)
+        self._format_preview_timer = self.root.after(
+            200, lambda t=type_name: self._run_format_preview(t)
+        )
+
+    def _schedule_format_preview_all(self):
+        if self._format_preview_timer is not None:
+            self.root.after_cancel(self._format_preview_timer)
+        self._format_preview_timer = self.root.after(200, self._run_all_format_previews)
+
+    def _run_format_preview(self, type_name):
+        self._format_preview_timer = None
+        updaters = {
+            'drawable': self.update_drawable_format,
+            'layout': self.update_layout_format,
+            'string': self.update_string_format,
+            'id': self.update_id_format,
+            'class': self.update_class_format,
+        }
+        fn = updaters.get(type_name)
+        if fn:
+            fn()
+
+    def _run_all_format_previews(self):
+        self._format_preview_timer = None
+        self.update_all_format_previews()
+
     def create_widgets(self):
         """创建界面组件 - 系统标题栏 + 其下菜单栏"""
         self.root.configure(bg=self.theme_manager.get_bg("main"))
-        # 配置TTK样式
         self.theme_manager.setup_ttk_styles()
-        
-        # 菜单栏（位于系统标题栏下方）
-        menubar_frame = tk.Frame(self.root, height=32, bg=self.theme_manager.get_bg("menubar"), cursor="hand2")  # Reduced height
+
+        menubar_frame = tk.Frame(self.root, height=36, bg=self._bg("menubar"))
         menubar_frame.pack(fill=tk.X)
         menubar_frame.pack_propagate(False)
         menubar_bg = self._bg("menubar")
         menubar_fg = self._fg("menubar")
-        for label, cmd in [
-            ("文件", self._menu_file),
-            ("关于", self._menu_about),
-            ("生成映射", self.generate_mapping),
-            ("应用修改", self._mapping_apply_current),
-            ("重置", self._mapping_reset_current),
-            ("清空", self._mapping_clear_current),
-            ("导入映射", self.import_mapping),
-            ("反向映射", self._mapping_reverse_current),
-            ("导出映射", self.export_mapping),
-            ("执行", self._menu_execute),
-        ]:
-            lbl = tk.Label(menubar_frame, text=label, font=("Segoe UI", 9, "bold"),
-                           bg=menubar_bg, fg=menubar_fg, cursor="hand2",
-                           padx=10, pady=6, relief="flat")  # Reduced padding
+
+        def _menu_label(parent, text, cmd, fg=None):
+            lbl = tk.Label(
+                parent, text=text, font=("Segoe UI", 9, "bold"),
+                bg=menubar_bg, fg=fg or menubar_fg, cursor="hand2",
+                padx=8, pady=6, relief="flat",
+            )
             lbl.pack(side=tk.LEFT)
             lbl.bind("<Button-1>", lambda e, c=cmd: c())
-            lbl.bind("<Enter>", lambda e, w=lbl: w.configure(bg="#007acc", fg="#ffffff"))
-            lbl.bind("<Leave>", lambda e, w=lbl: w.configure(bg=menubar_bg, fg=menubar_fg))
-        
-        # Add separator before module selection
-        ttk.Separator(menubar_frame, orient='vertical').pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=4)  # Reduced padding
-        
-        self.module_combobox = ttk.Combobox(menubar_frame, textvariable=self.module_selection,
-                                            values=self.modules, state="readonly", width=18, height=15)
-        self.module_combobox.pack(side=tk.LEFT, padx=(4, 12), pady=4)  # Reduced padding
-        
-        # Add separator before options
-        ttk.Separator(menubar_frame, orient='vertical').pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=4)  # Reduced padding
-        
+            lbl.bind("<Enter>", lambda e, w=lbl: w.configure(bg=self._bg("accent"), fg="#ffffff"))
+            lbl.bind("<Leave>", lambda e, w=lbl: w.configure(bg=menubar_bg, fg=fg or menubar_fg))
+            return lbl
+
+        _menu_label(menubar_frame, "文件", self._menu_file)
+        _menu_label(menubar_frame, "关于", self._menu_about)
+        _menu_label(menubar_frame, "生成映射", self.generate_mapping)
+        _menu_label(menubar_frame, "应用修改", self._mapping_apply_current)
+        _menu_label(menubar_frame, "重置", self._mapping_reset_current)
+        _menu_label(menubar_frame, "清空", self._mapping_clear_current)
+        _menu_label(menubar_frame, "导入映射", self.import_mapping)
+        _menu_label(menubar_frame, "反向映射", self._mapping_reverse_current)
+        _menu_label(menubar_frame, "导出映射", self.export_mapping)
+        _menu_label(menubar_frame, "执行", self._menu_execute, fg=self._bg("accent"))
+
+        self._vsep(menubar_frame)
+        self.module_combobox = ttk.Combobox(
+            menubar_frame, textvariable=self.module_selection,
+            values=self.modules, state="readonly", width=16,
+        )
+        self.module_combobox.pack(side=tk.LEFT, padx=(0, 8), pady=4)
+
+        self._vsep(menubar_frame)
         tk.Label(menubar_frame, text="选项", font=("Segoe UI", 9, "bold"),
                  bg=menubar_bg, fg=menubar_fg, padx=4).pack(side=tk.LEFT, pady=4)
         opt_frame = tk.Frame(menubar_frame, bg=menubar_bg)
         opt_frame.pack(side=tk.LEFT, pady=4)
-        self.cb_preview = ttk.Checkbutton(opt_frame, text="预览", variable=self.preview_mode)
-        self.cb_preview.pack(side=tk.LEFT, padx=3)  # Reduced padding
-        self.cb_update_ref = ttk.Checkbutton(opt_frame, text="更新引用", variable=self.update_references)
-        self.cb_update_ref.pack(side=tk.LEFT, padx=3)  # Reduced padding
-        self.cb_subdirs = ttk.Checkbutton(opt_frame, text="子目录", variable=self.include_subdirs)
-        self.cb_subdirs.pack(side=tk.LEFT, padx=3)  # Reduced padding
+        self.cb_preview = ttk.Checkbutton(
+            opt_frame, text="预览", variable=self.preview_mode, style="Menubar.TCheckbutton",
+        )
+        self.cb_preview.pack(side=tk.LEFT, padx=3)
+        self.cb_update_ref = ttk.Checkbutton(
+            opt_frame, text="更新引用", variable=self.update_references, style="Menubar.TCheckbutton",
+        )
+        self.cb_update_ref.pack(side=tk.LEFT, padx=3)
+        self.cb_subdirs = ttk.Checkbutton(
+            opt_frame, text="子目录", variable=self.include_subdirs, style="Menubar.TCheckbutton",
+        )
+        self.cb_subdirs.pack(side=tk.LEFT, padx=3)
 
         main_container = tk.Frame(self.root, bg=self._bg("main"))
         main_container.pack(fill=tk.BOTH, expand=True)
@@ -250,117 +436,125 @@ class AndroidResourceRenamerGUI:
         content_paned = ttk.PanedWindow(main_container, orient=tk.HORIZONTAL)
         content_paned.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        # ----- 左侧边栏（含竖线分隔） -----
-        left_outer = ttk.Frame(content_paned, padding=0)
+        # ----- 左侧边栏 -----
+        left_outer = tk.Frame(content_paned, bg=self._bg("main"))
         content_paned.add(left_outer, weight=0)
-        # left_wrapper = tk.Frame(left_outer, bg=self._bg("sidebar_border"), width=1)
-        # left_wrapper.pack(side=tk.RIGHT, fill=tk.Y)
-        left_inner = tk.Frame(left_outer, bg=self._bg("sidebar"), width=240)  # Reduced width
-        left_inner.pack(fill=tk.BOTH, expand=True)
+        left_inner = tk.Frame(left_outer, bg=self._bg("sidebar"), width=220)
+        left_inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         left_inner.pack_propagate(False)
+        self._vline(left_outer)
 
-        # 五个视图切换按钮（VS Code 活动栏风格）
-        btn_frame = tk.Frame(left_inner, bg=self._bg("sidebar"), height=36)  # Reduced height
-        btn_frame.pack(fill=tk.X)
-        btn_frame.pack_propagate(False)
+        btn_frame = tk.Frame(left_inner, bg=self._bg("sidebar"))
+        btn_frame.pack(fill=tk.X, padx=2, pady=(4, 0))
         self._left_active = tk.StringVar(value="资源")
         
         # Store button references for selection state management
         self._nav_buttons = {}
         
-        for name, key in [("资源", "资源"), ("布局", "布局"), ("字符", "字符"), ("ID", "ID"), ("类名", "类名")]:
-            b = tk.Button(btn_frame, text=name, relief=tk.FLAT, font=("Segoe UI", 9, "bold"),
-                          bd=0, bg=self._bg("sidebar_btn"), fg=self._fg("sidebar_btn"),
-                          activebackground="#007acc", activeforeground="#ffffff",
-                          highlightthickness=0, padx=8, pady=6,
-                          command=lambda k=key: self._switch_left_view(k))
-            b.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1, pady=2)
-            b.bind("<Enter>", lambda e, w=b: w.configure(bg="#007acc", fg="#ffffff"))
+        nav_items = [("资源", "资源"), ("布局", "布局"), ("字符", "字符"), ("ID", "ID"), ("类名", "类名")]
+        for col, (name, key) in enumerate(nav_items):
+            btn_frame.columnconfigure(col, weight=1)
+            b = tk.Button(
+                btn_frame, text=name, relief=tk.FLAT, font=("Segoe UI", 9, "bold"),
+                bd=0, bg=self._bg("sidebar_btn"), fg=self._fg("sidebar_btn"),
+                activebackground=self._bg("accent"), activeforeground="#ffffff",
+                highlightthickness=0, padx=4, pady=5,
+                command=lambda k=key: self._switch_left_view(k),
+            )
+            b.grid(row=0, column=col, sticky="ew", padx=1)
+            b.bind("<Enter>", lambda e, w=b: w.configure(bg=self._bg("accent"), fg="#ffffff"))
             b.bind("<Leave>", lambda e, w=b: self._update_button_state(w))
             self._nav_buttons[key] = b
         
-        # Set initial selection state (资源)
         self._update_button_state(self._nav_buttons["资源"])
 
-        # 左侧堆叠内容（资源列表 / 布局列表 / 字符列表 / ID列表 / 类名列表）
         self._left_stack = tk.Frame(left_inner, bg=self._bg("sidebar"))
         self._left_stack.pack(fill=tk.BOTH, expand=True, pady=2)  # Reduced padding
 
         # Create left sidebar frames
         self._left_drawable_frame = tk.Frame(self._left_stack, bg=self._bg("sidebar"))
+        self._build_usage_toolbar(self._left_drawable_frame, 'drawable')
         list_frame = ttk.Frame(self._left_drawable_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.drawable_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=15,
-                                           bg=self._bg("listbox"), fg=self._fg("listbox"),
-                                           selectbackground=self._bg("listbox_sel"), selectforeground=self._fg("listbox_sel"),
-                                           bd=0, highlightthickness=0)
+        self.drawable_listbox = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=15, **self._listbox_kwargs()
+        )
         self.drawable_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.drawable_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar.pack_forget()
         self.drawable_listbox.configure(yscrollcommand=scrollbar.set)
-        count_label = ttk.Label(self._left_drawable_frame, text="共 0 个文件", font=("Segoe UI", 8), foreground="gray")
-        count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
+        self.drawable_count_label = ttk.Label(
+            self._left_drawable_frame, text="共 0 个文件", font=("Segoe UI", 8),
+            style="Dim.TLabel",
+        )
+        self.drawable_count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
 
         self._left_layout_frame = tk.Frame(self._left_stack, bg=self._bg("sidebar"))
+        self._build_usage_toolbar(self._left_layout_frame, 'layout')
         list_frame = ttk.Frame(self._left_layout_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.layout_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=15,
-                                         bg=self._bg("listbox"), fg=self._fg("listbox"),
-                                         selectbackground=self._bg("listbox_sel"), selectforeground=self._fg("listbox_sel"),
-                                         bd=0, highlightthickness=0)
+        self.layout_listbox = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=15, **self._listbox_kwargs()
+        )
         self.layout_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.layout_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar.pack_forget()
         self.layout_listbox.configure(yscrollcommand=scrollbar.set)
-        count_label = ttk.Label(self._left_layout_frame, text="共 0 个文件", font=("Segoe UI", 8), foreground="gray")
-        count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
+        self.layout_count_label = ttk.Label(
+            self._left_layout_frame, text="共 0 个文件", font=("Segoe UI", 8), style="Dim.TLabel",
+        )
+        self.layout_count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
 
         self._left_string_frame = tk.Frame(self._left_stack, bg=self._bg("sidebar"))
+        self._build_usage_toolbar(self._left_string_frame, 'string')
         list_frame = ttk.Frame(self._left_string_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.string_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=15,
-                                         bg=self._bg("listbox"), fg=self._fg("listbox"),
-                                         selectbackground=self._bg("listbox_sel"), selectforeground=self._fg("listbox_sel"),
-                                         bd=0, highlightthickness=0)
+        self.string_listbox = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=15, **self._listbox_kwargs()
+        )
         self.string_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.string_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar.pack_forget()
         self.string_listbox.configure(yscrollcommand=scrollbar.set)
-        count_label = ttk.Label(self._left_string_frame, text="共 0 个文件", font=("Segoe UI", 8), foreground="gray")
-        count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
+        self.string_count_label = ttk.Label(
+            self._left_string_frame, text="共 0 条", font=("Segoe UI", 8), style="Dim.TLabel",
+        )
+        self.string_count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
 
         self._left_id_frame = tk.Frame(self._left_stack, bg=self._bg("sidebar"))
         list_frame = ttk.Frame(self._left_id_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.id_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=15,
-                                     bg=self._bg("listbox"), fg=self._fg("listbox"),
-                                     selectbackground=self._bg("listbox_sel"), selectforeground=self._fg("listbox_sel"),
-                                     bd=0, highlightthickness=0)
+        self.id_listbox = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=15, **self._listbox_kwargs()
+        )
         self.id_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.id_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar.pack_forget()
         self.id_listbox.configure(yscrollcommand=scrollbar.set)
-        count_label = ttk.Label(self._left_id_frame, text="共 0 个ID", font=("Segoe UI", 8), foreground="gray")
+        count_label = ttk.Label(
+            self._left_id_frame, text="共 0 个ID", font=("Segoe UI", 8), style="Dim.TLabel",
+        )
         count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
 
         # 类名列表 frame
         self._left_class_frame = tk.Frame(self._left_stack, bg=self._bg("sidebar"))
         list_frame = ttk.Frame(self._left_class_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        self.class_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED, height=15,
-                                        bg=self._bg("listbox"), fg=self._fg("listbox"),
-                                        selectbackground=self._bg("listbox_sel"), selectforeground=self._fg("listbox_sel"),
-                                        bd=0, highlightthickness=0)
+        self.class_listbox = tk.Listbox(
+            list_frame, selectmode=tk.EXTENDED, height=15, **self._listbox_kwargs()
+        )
         self.class_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.class_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         scrollbar.pack_forget()
         self.class_listbox.configure(yscrollcommand=scrollbar.set)
-        self.class_count_label = ttk.Label(self._left_class_frame, text="共 0 个类", font=("Segoe UI", 8), foreground="gray")
+        self.class_count_label = ttk.Label(
+            self._left_class_frame, text="共 0 个类", font=("Segoe UI", 8), style="Dim.TLabel",
+        )
         self.class_count_label.pack(anchor=tk.W, padx=4, pady=(2, 4))
 
         # 默认显示资源列表
@@ -371,108 +565,79 @@ class AndroidResourceRenamerGUI:
         self._left_id_frame.pack_forget()
         self._left_class_frame.pack_forget()
 
-        # ----- 中间栏：工作区 + 日志（左中右三栏之「中」） -----
-        center_frame = ttk.Frame(content_paned, padding=2)
+        # ----- 中间栏：映射 + 日志 -----
+        center_frame = tk.Frame(content_paned, bg=self._bg("main"))
         content_paned.add(center_frame, weight=1)
         center_paned = ttk.PanedWindow(center_frame, orient=tk.VERTICAL)
         center_paned.pack(fill=tk.BOTH, expand=True)
-        work_frame = ttk.Frame(center_paned)
+
+        work_frame = tk.Frame(center_paned, bg=self._bg("main"))
         center_paned.add(work_frame, weight=2)
-        # 中间工作区直接显示映射编辑内容（不再使用外层标签）
-        mapping_frame = ttk.Frame(work_frame)
-        mapping_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
-        
-        # 标题栏（与左侧按钮样式一致）
-        mapping_header = tk.Frame(mapping_frame, bg=self._bg("sidebar"), height=32)
-        mapping_header.pack(fill=tk.X)
-        mapping_header.pack_propagate(False)
-        
+        mapping_frame = tk.Frame(work_frame, bg=self._bg("main"))
+        mapping_frame.pack(fill=tk.BOTH, expand=True)
+
         self._mapping_display_type = "drawable"
         self._mapping_title_var = tk.StringVar(value="Drawable 映射")
-        title_label = tk.Label(mapping_header, textvariable=self._mapping_title_var, 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        self.mapping_text = scrolledtext.ScrolledText(
-            mapping_frame,
-            height=20,
-            wrap=tk.WORD,
-            bg=self._bg("editor"),
-            fg=self._fg("editor"),
-            bd=0,
-            relief=tk.FLAT,
-            highlightthickness=0,
+        self._section_title(mapping_frame, "", bg_key="main", textvariable=self._mapping_title_var)
+
+        self.mapping_text = self._create_editor(
+            mapping_frame, height=20, wrap=tk.WORD, font=("Consolas", 10),
+            line_numbers=True,
         )
-        self.mapping_text.vbar.configure(width=9)
-        self.mapping_text.vbar.pack_forget()
-        self.mapping_text.pack(fill=tk.BOTH, expand=True, pady=2)
-        # 中间栏下半：日志
-        log_frame = ttk.Frame(center_paned, padding=2)
+
+        log_frame = tk.Frame(center_paned, bg=self._bg("main"))
         center_paned.add(log_frame, weight=1)
-        
-        # 日志标题栏
-        log_header = tk.Frame(log_frame, bg=self._bg("editor"), height=24)
-        log_header.pack(fill=tk.X)
-        log_header.pack_propagate(False)
-        log_title = tk.Label(log_header, text="日志", 
-                            font=("Segoe UI", 9, "bold"),
-                            bg=self._bg("editor"), fg=self._fg("editor"))
-        log_title.pack(side=tk.LEFT, padx=8)
-        
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame,
-            height=5,
-            wrap=tk.WORD,
-            font=("Consolas", 9),
-            bg=self._bg("editor"),
-            fg=self._fg("editor"),
-            bd=0,
-            relief=tk.FLAT,
-            highlightthickness=0,
+        try:
+            center_paned.pane(work_frame, minsize=200)
+            center_paned.pane(log_frame, minsize=80)
+        except tk.TclError:
+            pass
+
+        self._section_title(log_frame, "输出", bg_key="main")
+
+        self.log_text = self._create_editor(
+            log_frame, height=5, wrap=tk.WORD, font=("Consolas", 9),
         )
-        self.log_text.vbar.configure(width=9)
-        self.log_text.vbar.pack_forget()
-        self.log_text.pack(fill=tk.BOTH, expand=True)
         self.status_var = tk.StringVar(value="就绪")
 
-        # ----- 右侧边栏（含竖线分隔） -----
-        right_outer = ttk.Frame(content_paned, padding=0)
+        # ----- 右侧边栏 -----
+        right_outer = tk.Frame(content_paned, bg=self._bg("main"))
         content_paned.add(right_outer, weight=0)
-        right_border = tk.Frame(right_outer, bg=self._bg("sidebar_border"), width=1)
-        right_border.pack(side=tk.LEFT, fill=tk.Y)
-        right_inner = tk.Frame(right_outer, bg=self._bg("sidebar"), width=260)  # Slightly reduced width
-        right_inner.pack(fill=tk.BOTH, expand=True)
+        self._vline(right_outer, side=tk.LEFT)
+        right_inner = tk.Frame(right_outer, bg=self._bg("sidebar"), width=300)
+        right_inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         right_inner.pack_propagate(False)
-        # ttk.Label(right_inner, text="命名格式", font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=(8, 6), padx=6)  # Reduced padding
-        
-        # 右侧内容面板容器（由左侧菜单控制）
-        self._right_content_frame = tk.Frame(right_inner, bg=self._bg("sidebar"))
-        self._right_content_frame.pack(fill=tk.BOTH, expand=True, pady=2)
 
-        # 创建各个格式设置面板
+        self._section_title(right_inner, "命名格式", bg_key="sidebar")
+
+        self._right_scroll = ScrollableFrame(right_inner, bg=self._bg("sidebar"))
+        self._right_scroll.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self._right_content_frame = self._right_scroll.body
+
         self._drawable_format_panel = ttk.Frame(self._right_content_frame)
-        self._build_drawable_format_ui(self._drawable_format_panel)
+        FormatPanelBuilder.build_drawable_panel(self._drawable_format_panel, self)
 
         self._layout_format_panel = ttk.Frame(self._right_content_frame)
-        self._build_layout_format_ui(self._layout_format_panel)
+        FormatPanelBuilder.build_layout_panel(self._layout_format_panel, self)
 
         self._string_format_panel = ttk.Frame(self._right_content_frame)
-        self._build_string_format_ui(self._string_format_panel)
+        FormatPanelBuilder.build_string_panel(self._string_format_panel, self)
 
         self._id_format_panel = ttk.Frame(self._right_content_frame)
-        self._build_id_format_ui(self._id_format_panel)
+        FormatPanelBuilder.build_id_panel(self._id_format_panel, self)
 
         self._class_format_panel = ttk.Frame(self._right_content_frame)
-        self._build_class_format_ui(self._class_format_panel)
+        FormatPanelBuilder.build_class_panel(self._class_format_panel, self)
 
-        # 默认显示资源面板
         self._drawable_format_panel.pack(fill=tk.BOTH, expand=True)
+        self._right_scroll.bind_wheel_to_body()
 
-        # 底部状态栏（VS Code 风格：蓝条白字）
+        self._content_paned = content_paned
+        self.root.after_idle(self._init_paned_layout)
+
+        # 底部状态栏
         status_bg = self._bg("statusbar") or "#007acc"
-        status_fg = (self._theme_light if self.theme_mode.get() == "Light" else self._theme_dark).get("statusbar_fg", "#ffffff")
+        status_fg = self.theme_manager.get_bg("statusbar_fg")
         self._status_frame = tk.Frame(main_container, height=24, bg=status_bg)
         self._status_frame.pack(fill=tk.X)
         self._status_frame.pack_propagate(False)
@@ -531,139 +696,6 @@ class AndroidResourceRenamerGUI:
         listbox.bind('<Leave>', on_leave)
         listbox.bind('<Button-1>', on_click)
 
-    def _setup_theme_colors(self):
-        """主题色表（参考 VS Code）"""
-        self._theme_light = {
-            "main": "#ffffff", "menubar": "#f3f3f3", "menubar_fg": "#333333",
-            "sidebar": "#f3f3f3", "sidebar_btn": "#e8e8e8", "sidebar_btn_active": "#094771",
-            "sidebar_border": "#e0e0e0", "listbox": "#ffffff", "listbox_fg": "#333333",
-            "listbox_sel": "#094771", "listbox_sel_fg": "#ffffff",
-            "editor": "#ffffff", "editor_fg": "#333333", "editor_border": "#e0e0e0",
-            "statusbar": "#007acc", "statusbar_fg": "#ffffff", "tab_bg": "#f3f3f3", "tab_fg": "#333333",
-        }
-        self._theme_dark = {
-            "main": "#1e1e1e", "menubar": "#323233", "menubar_fg": "#cccccc",
-            "sidebar": "#252526", "sidebar_btn": "#2d2d30", "sidebar_btn_active": "#0e639c",
-            "sidebar_border": "#3c3c3c", "listbox": "#252526", "listbox_fg": "#cccccc",
-            "listbox_sel": "#094771", "listbox_sel_fg": "#ffffff",
-            "editor": "#1e1e1e", "editor_fg": "#d4d4d4", "editor_border": "#3c3c3c",
-            "statusbar": "#007acc", "statusbar_fg": "#ffffff", "tab_bg": "#252526", "tab_fg": "#cccccc",
-        }
-        self._theme_light_fg = {"menubar": "#333333", "sidebar_btn": "#333333", "sidebar_btn_active": "#ffffff",
-                               "editor": "#333333", "listbox": "#333333", "listbox_sel": "#ffffff"}
-    def _setup_ttk_styles(self):
-        """配置 ttk 样式（VS Code 风格）"""
-        s = ttk.Style()
-        bg_main = self._bg("main")
-        bg_sidebar = self._bg("sidebar")
-        fg = self._fg("editor") if self.theme_mode.get() == "Dark" else self._fg("editor")
-        tab_bg = self._bg("tab_bg") if hasattr(self, "_theme_light") else "#f3f3f3"
-        border = self._bg("sidebar_border") if self.theme_mode.get() == "Light" else self._bg("sidebar_border")
-        s.configure("TFrame", background=bg_main)
-        s.configure("TNotebook", background=bg_main, borderwidth=0)
-        # Custom notebook tab styling to match left navigation buttons
-        s.configure("TNotebook.Tab", padding=[12, 6], font=("Segoe UI", 9, "bold"),
-                   background=self._bg("sidebar_btn"), foreground=self._fg("sidebar_btn"))
-        s.map("TNotebook.Tab", 
-              background=[("selected", "#007acc"), ("active", "#007acc")],
-              foreground=[("selected", "#ffffff"), ("active", "#ffffff")])
-        
-        # Enhanced button styling with rounded appearance and hover effects
-        s.configure("TButton", padding=[10, 4], font=("Segoe UI", 9), 
-                   background="#007acc", foreground="#ffffff", 
-                   relief="flat", borderwidth=0)
-        s.map("TButton", 
-              background=[("active", "#005a9e"), ("pressed", "#004a8c")],
-              foreground=[("active", "#ffffff")])
-        
-        # Custom button style for primary actions
-        s.configure("Primary.TButton", padding=[12, 6], font=("Segoe UI", 9, "bold"),
-                   background="#007acc", foreground="#ffffff")
-        s.map("Primary.TButton",
-              background=[("active", "#005a9e"), ("pressed", "#004a8c")])
-        
-        s.configure("TLabelFrame", padding=2, font=("Segoe UI", 9))
-        s.configure("TLabelFrame.Label", font=("Segoe UI", 9, "bold"))
-        s.configure("TLabelframe", padding=2)
-        
-        # 美化Combobox下拉组件
-        combo_bg = "#ffffff" if self.theme_mode.get() == "Light" else "#2d2d2d"
-        combo_fg = "#000000" if self.theme_mode.get() == "Light" else "#ffffff"
-        combo_field_bg = "#f5f5f5" if self.theme_mode.get() == "Light" else "#3a3a3a"
-        combo_select_bg = "#007acc"
-        combo_select_fg = "#ffffff"
-        
-        s.configure("TCombobox",
-                   fieldbackground=combo_field_bg,
-                   background=combo_bg,
-                   foreground=combo_fg,
-                   arrowcolor=combo_fg,
-                   borderwidth=1,
-                   relief="flat",
-                   padding=5)
-        
-        s.map("TCombobox",
-              fieldbackground=[("readonly", combo_field_bg), ("disabled", combo_field_bg)],
-              selectbackground=[("readonly", combo_select_bg)],
-              selectforeground=[("readonly", combo_select_fg)],
-              foreground=[("readonly", combo_fg), ("disabled", "#999999")])
-        
-        # 美化拖动条 - 窄而精致的分隔效果
-        sash_color = "#e0e0e0" if self.theme_mode.get() == "Light" else "#404040"
-        s.configure("TPanedwindow", background=sash_color, sashwidth=1, sashpad=0, sashrelief="flat")
-        
-        # Custom scrollbar styling - modern transparent appearance
-        scrollbar_bg = self._bg("main")  # Transparent background matching main area
-        scrollbar_trough = "#f0f0f0" if self.theme_mode.get() == "Light" else "#3a3a3a"
-        scrollbar_thumb = "#c0c0c0" if self.theme_mode.get() == "Light" else "#666666"
-        scrollbar_thumb_active = "#a0a0a0" if self.theme_mode.get() == "Light" else "#888888"
-        
-        # Vertical scrollbar
-        s.configure("Vertical.TScrollbar", 
-                   troughcolor=scrollbar_trough,
-                   background=scrollbar_bg,
-                   bordercolor=scrollbar_bg,
-                   darkcolor=scrollbar_bg,
-                   lightcolor=scrollbar_bg,
-                   arrowcolor=scrollbar_thumb,
-                   width=9)
-        
-        s.map("Vertical.TScrollbar",
-              background=[("active", scrollbar_bg), ("!active", scrollbar_bg)],
-              troughcolor=[("active", scrollbar_trough), ("!active", scrollbar_trough)])
-        
-        # Horizontal scrollbar  
-        s.configure("Horizontal.TScrollbar",
-                   troughcolor=scrollbar_trough,
-                   background=scrollbar_bg,
-                   bordercolor=scrollbar_bg,
-                   darkcolor=scrollbar_bg,
-                   lightcolor=scrollbar_bg,
-                   arrowcolor=scrollbar_thumb,
-                   height=9)
-        
-        s.map("Horizontal.TScrollbar",
-              background=[("active", scrollbar_bg), ("!active", scrollbar_bg)],
-              troughcolor=[("active", scrollbar_trough), ("!active", scrollbar_trough)])
-        
-        # Entry widget styling
-        s.configure("TEntry", fieldbackground="#ffffff", bordercolor="#cccccc", 
-                   lightcolor="#eeeeee", darkcolor="#aaaaaa", padding=5)
-        
-        # Combobox styling
-        s.configure("TCombobox", fieldbackground="#ffffff", bordercolor="#cccccc", 
-                   arrowcolor="#333333", padding=5)
-
-    def _bg(self, key):
-        if self.theme_mode.get() == "Light":
-            return self._theme_light.get(key, "#ffffff")
-        return self._theme_dark.get(key, "#252526")
-
-    def _fg(self, key):
-        if self.theme_mode.get() == "Light":
-            return self._theme_light_fg.get(key, "#000000")
-        return self._theme_dark.get(key + "_fg", "#cccccc")
-
     def _build_project_panel(self, parent):
         """左侧「项目」面板：显示项目信息"""
         ttk.Label(parent, text="项目信息", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W, padx=4, pady=(4, 2))
@@ -681,10 +713,6 @@ class AndroidResourceRenamerGUI:
         ttk.Label(info_frame, text="使用顶部菜单「文件」选择项目路径", 
                  font=("Segoe UI", 8), foreground="gray",
                  wraplength=200).pack(anchor=tk.W, pady=(0, 4))
-
-    def _menu_file(self):
-        """顶部菜单：文件（浏览项目）"""
-        self.browse_project()
 
     def _menu_about(self):
         """顶部菜单：关于"""
@@ -715,24 +743,6 @@ class AndroidResourceRenamerGUI:
         
         ttk.Button(content_frame, text="关闭", command=win.destroy).pack(pady=(15, 0))
 
-    def _menu_execute(self):
-        """顶部菜单：执行"""
-        self.execute_rename()
-
-    def _build_drawable_format_ui(self, parent):
-        """构建可绘制格式的UI"""
-        win = Toplevel(self.root)
-        win.title("可绘制格式")
-        win.geometry("400x300")
-
-        ttk.Label(win, text="格式名称").grid(row=0, column=0, padx=8, pady=12)
-        ttk.Entry(win, textvariable=self.drawable_format_name).grid(row=0, column=1, padx=8, pady=12)
-
-        ttk.Label(win, text="格式描述").grid(row=1, column=0, padx=8, pady=12)
-        ttk.Entry(win, textvariable=self.drawable_format_description).grid(row=1, column=1, padx=8, pady=12)
-
-        ttk.Button(win, text="关闭", command=win.destroy).grid(row=2, column=1, padx=8, pady=12)
-
     def _refresh_project_tree(self):
         """根据当前项目路径刷新左侧项目树"""
         if not hasattr(self, "_project_tree"):
@@ -749,9 +759,24 @@ class AndroidResourceRenamerGUI:
         self._project_tree.insert("", "end", iid=path_str, text=root_name, open=False)
         self._insert_project_tree_children(path_str, root_path)
 
-    def build_format_string(self, fmt_type, prefix, keyword, suffix):
+    def build_format_string(self, order_mode, part_order, prefix, keyword, suffix, number):
         """构建格式预览字符串"""
-        return FormatHelper.build_format_string(fmt_type, prefix, keyword, suffix)
+        return FormatHelper.build_format_string(
+            order_mode, part_order, prefix, keyword, suffix, number,
+        )
+
+    def _make_format_config(
+        self, order_mode_var, part_order_var,
+        prefix_var, keyword_var, suffix_var, number_var,
+    ):
+        return FormatHelper.make_config(
+            order_mode_var.get(),
+            part_order_var.get(),
+            prefix_var.get(),
+            keyword_var.get(),
+            suffix_var.get(),
+            number_var.get(),
+        )
 
     def _insert_project_tree_children(self, parent_iid, dir_path):
         """向项目树中插入目录下的子项（仅一层）；跳过占位符子节点"""
@@ -846,6 +871,9 @@ class AndroidResourceRenamerGUI:
             self._left_class_frame.pack(fill=tk.BOTH, expand=True)
             self._class_format_panel.pack(fill=tk.BOTH, expand=True)
 
+        if hasattr(self, '_right_scroll'):
+            self.root.after_idle(self._right_scroll.update_scroll_region)
+
         # 同步中间映射编辑区显示类型（仅切到资源相关视图时）
         key_to_type = {"资源": "drawable", "布局": "layout", "字符": "string", "ID": "id", "类名": "class"}
         if key in key_to_type:
@@ -854,7 +882,10 @@ class AndroidResourceRenamerGUI:
         # Update button selection states
         for view_key, button in self._nav_buttons.items():
             if view_key == key:
-                button.configure(bg="#007acc", fg="#ffffff")
+                button.configure(
+                    bg=self._bg("sidebar_btn_active"),
+                    fg=self._fg("sidebar_btn_active"),
+                )
             else:
                 self._update_button_state(button)
 
@@ -867,7 +898,10 @@ class AndroidResourceRenamerGUI:
         button_key = text_to_key.get(button_text)
         
         if button_key and button_key == current_active:
-            button.configure(bg="#007acc", fg="#ffffff")
+            button.configure(
+                bg=self._bg("sidebar_btn_active"),
+                fg=self._fg("sidebar_btn_active"),
+            )
         else:
             button.configure(bg=self._bg("sidebar_btn"), fg=self._fg("sidebar_btn"))
 
@@ -877,400 +911,154 @@ class AndroidResourceRenamerGUI:
 
 
 
-    def _build_drawable_format_ui(self, parent):
-        for project in self.projects:
-            project_id = self.project_tree.insert("", "end", text=project.name)
-            for file in project.files:
-                self.project_tree.insert(project_id, "end", text=file.name)
 
-    def _refresh_format_type(self, parent, current_active):
-        ftype = ttk.Frame(parent)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.drawable_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.drawable_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.drawable_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(parent, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-
-        self.drawable_prefix_entry = ttk.Entry(parent, textvariable=self.drawable_prefix)
-        self.drawable_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(parent, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.drawable_keyword_entry = ttk.Entry(parent, textvariable=self.drawable_keyword)
-        self.drawable_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(parent, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.drawable_suffix_entry = ttk.Entry(parent, textvariable=self.drawable_suffix)
-        self.drawable_suffix_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(parent)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.drawable_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.drawable_format_preview.pack(side=tk.LEFT)
-        ttk.Label(parent, text="关键词可用 {name}；后缀可用 {number:04d}、{random}", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
-
-    def _build_layout_format_ui(self, parent):
-        """构建 Layout 格式设置区域（垂直排列）"""
-        # 标题栏
-        header = tk.Frame(parent, bg=self._bg("sidebar"), height=32)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        title_label = tk.Label(header, text="布局命名格式", 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        # 内容区域
-        content = ttk.Frame(parent)
-        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        
-        ttk.Label(content, text="格式:").pack(anchor=tk.W, pady=(0, 2))
-        ftype = ttk.Frame(content)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.layout_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.layout_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.layout_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(content, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-        self.layout_prefix_entry = ttk.Entry(content, textvariable=self.layout_prefix)
-        self.layout_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.layout_keyword_entry = ttk.Entry(content, textvariable=self.layout_keyword)
-        self.layout_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.layout_suffix_entry = ttk.Entry(content, textvariable=self.layout_suffix)
-        self.layout_suffix_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(content)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.layout_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.layout_format_preview.pack(side=tk.LEFT)
-        ttk.Label(content, text="预设:").pack(anchor=tk.W, pady=(6, 2))
-        preset_f = ttk.Frame(content)
-        preset_f.pack(fill=tk.X)
-        for text, prefix, keyword, suffix in [
-            ("Activity", "activity_", "{name}_", "{number:04d}"),
-            ("Fragment", "fragment_", "{name}_", "{number:04d}"),
-            ("Dialog", "dialog_", "{name}_", "{number:04d}"),
-            ("Item", "item_", "{name}_", "{number:04d}"),
-            ("Layout", "layout_", "{name}_", "{number:04d}"),
-        ]:
-            btn = ttk.Button(preset_f, text=text, command=lambda p=prefix, k=keyword, s=suffix: self.set_layout_preset(p, k, s))
-            btn.pack(anchor=tk.W, pady=1, padx=2, fill=tk.X)
     
-    def _build_string_format_ui(self, parent):
-        """构建 String 格式设置区域（垂直排列）"""
-        # 标题栏
-        header = tk.Frame(parent, bg=self._bg("sidebar"), height=32)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        title_label = tk.Label(header, text="字符命名格式", 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        # 内容区域
-        content = ttk.Frame(parent)
-        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        
-        ttk.Label(content, text="格式:").pack(anchor=tk.W, pady=(0, 2))
-        ftype = ttk.Frame(content)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.string_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.string_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.string_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(content, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-        self.string_prefix_entry = ttk.Entry(content, textvariable=self.string_prefix)
-        self.string_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.string_keyword_entry = ttk.Entry(content, textvariable=self.string_keyword)
-        self.string_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.string_suffix_entry = ttk.Entry(content, textvariable=self.string_suffix)
-        self.string_suffix_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(content)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.string_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.string_format_preview.pack(side=tk.LEFT)
-        ttk.Label(content, text="关键词可用 {name}；后缀可用 {number:04d}、{random}", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
 
-    def _build_id_format_ui(self, parent):
-        """构建 ID 格式设置区域（垂直排列）"""
-        # 标题栏（与工作区域标题一致）
-        header = tk.Frame(parent, bg=self._bg("sidebar"), height=32)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        title_label = tk.Label(header, text="ID命名格式", 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        # 内容区域
-        content = ttk.Frame(parent)
-        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        
-        ttk.Label(content, text="格式:").pack(anchor=tk.W, pady=(0, 2))
-        ftype = ttk.Frame(content)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.id_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.id_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.id_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(content, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-        self.id_prefix_entry = ttk.Entry(content, textvariable=self.id_prefix)
-        self.id_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.id_keyword_entry = ttk.Entry(content, textvariable=self.id_keyword)
-        self.id_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.id_suffix_entry = ttk.Entry(content, textvariable=self.id_suffix)
-        self.id_suffix_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(content)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.id_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.id_format_preview.pack(side=tk.LEFT)
-        ttk.Label(content, text="用于重命名 @+id/xxx，引用将同步更新", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
 
-    def _build_class_format_ui(self, parent):
-        """构建类名格式设置区域（垂直排列）"""
-        # 标题栏（与工作区域标题一致）
-        header = tk.Frame(parent, bg=self._bg("sidebar"), height=32)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        title_label = tk.Label(header, text="类名命名格式", 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        # 内容区域
-        content = ttk.Frame(parent)
-        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        
-        ttk.Label(content, text="格式:").pack(anchor=tk.W, pady=(0, 2))
-        ftype = ttk.Frame(content)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.class_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.class_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.class_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(content, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-        self.class_prefix_entry = ttk.Entry(content, textvariable=self.class_prefix)
-        self.class_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.class_keyword_entry = ttk.Entry(content, textvariable=self.class_keyword)
-        self.class_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.class_suffix_entry = ttk.Entry(content, textvariable=self.class_suffix)
-        self.class_suffix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="过滤字符:").pack(anchor=tk.W, pady=(0, 0))
-        self.class_filter_entry = ttk.Entry(content, textvariable=self.class_filter_chars)
-        self.class_filter_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(content)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.class_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.class_format_preview.pack(side=tk.LEFT)
-        ttk.Label(content, text="重命名.java文件，更新AndroidManifest.xml和import引用", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
-        ttk.Label(content, text="过滤字符：从原类名中移除指定字符（如Activity）", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
 
-    def _build_drawable_format_ui(self, parent):
-        """构建 Drawable 格式设置区域（垂直排列）"""
-        # 标题栏（与工作区域标题一致）
-        header = tk.Frame(parent, bg=self._bg("sidebar"), height=32)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-        title_label = tk.Label(header, text="资源命名格式", 
-                              font=("Segoe UI", 9, "bold"),
-                              bg=self._bg("sidebar"), fg=self._fg("sidebar_btn"),
-                              pady=4)
-        title_label.pack(side=tk.LEFT, padx=8)
-        
-        # 内容区域
-        content = ttk.Frame(parent)
-        content.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        
-        ttk.Label(content, text="格式:").pack(anchor=tk.W, pady=(0, 2))
-        ftype = ttk.Frame(content)
-        ftype.pack(fill=tk.X, pady=(0, 6))
-        ttk.Radiobutton(ftype, text="前缀_关键词_后缀", variable=self.drawable_format_type, value="prefix_keyword_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="关键词_前缀_后缀", variable=self.drawable_format_type, value="keyword_prefix_number").pack(anchor=tk.W)
-        ttk.Radiobutton(ftype, text="前缀_后缀_关键词", variable=self.drawable_format_type, value="prefix_number_keyword").pack(anchor=tk.W)
-        ttk.Label(content, text="前缀:").pack(anchor=tk.W, pady=(4, 0))
-        self.drawable_prefix_entry = ttk.Entry(content, textvariable=self.drawable_prefix)
-        self.drawable_prefix_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="关键词:").pack(anchor=tk.W, pady=(0, 0))
-        self.drawable_keyword_entry = ttk.Entry(content, textvariable=self.drawable_keyword)
-        self.drawable_keyword_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(content, text="后缀:").pack(anchor=tk.W, pady=(0, 0))
-        self.drawable_suffix_entry = ttk.Entry(content, textvariable=self.drawable_suffix)
-        self.drawable_suffix_entry.pack(fill=tk.X, pady=(0, 6))
-        prev_f = ttk.Frame(content)
-        prev_f.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(prev_f, text="预览:").pack(side=tk.LEFT, padx=(0, 4))
-        self.drawable_format_preview = ttk.Label(prev_f, text="", foreground="blue")
-        self.drawable_format_preview.pack(side=tk.LEFT)
-        ttk.Label(content, text="关键词可用 {name}；后缀可用 {number:04d}、{random}", font=("", 8), foreground="gray").pack(anchor=tk.W, pady=(0, 4))
 
-    def _refresh_format_type(self, parent, current_active):
-        """更新格式类型"""
-        pass
+
+
+    def _init_paned_layout(self):
+        """设置三栏默认宽度比例"""
+        try:
+            w = self._content_paned.winfo_width()
+            if w > 400:
+                self._content_paned.sashpos(0, 220)
+                self._content_paned.sashpos(1, max(w - 300, int(w * 0.62)))
+        except tk.TclError:
+            pass
+
+    def _format_preview_args(self, type_name):
+        """获取某资源类型的格式预览参数"""
+        return (
+            getattr(self, f'{type_name}_order_mode').get(),
+            getattr(self, f'{type_name}_part_order').get(),
+            getattr(self, f'{type_name}_prefix').get(),
+            getattr(self, f'{type_name}_keyword').get(),
+            getattr(self, f'{type_name}_suffix').get(),
+            getattr(self, f'{type_name}_number').get(),
+        )
+
+    def _preview_fg(self):
+        return self.theme_manager.get_bg("preview_fg")
 
     def update_drawable_format(self):
-        format_str = self.build_format_string(
-            self.drawable_format_type.get(),
-            self.drawable_prefix.get(),
-            self.drawable_keyword.get(),
-            self.drawable_suffix.get()
-        )
         if self.drawable_format_preview:
-            self.drawable_format_preview.config(text=format_str)
-    
+            self.drawable_format_preview.config(
+                text=self.build_format_string(*self._format_preview_args('drawable')),
+                foreground=self._preview_fg(),
+            )
+
     def update_layout_format(self):
-        """更新Layout格式预览"""
-        format_str = self.build_format_string(
-            self.layout_format_type.get(),
-            self.layout_prefix.get(),
-            self.layout_keyword.get(),
-            self.layout_suffix.get()
-        )
         if self.layout_format_preview:
-            self.layout_format_preview.config(text=format_str)
-    
+            self.layout_format_preview.config(
+                text=self.build_format_string(*self._format_preview_args('layout')),
+                foreground=self._preview_fg(),
+            )
+
     def update_string_format(self):
-        format_str = self.build_format_string(
-            self.string_format_type.get(),
-            self.string_prefix.get(),
-            self.string_keyword.get(),
-            self.string_suffix.get()
-        )
         if self.string_format_preview:
-            self.string_format_preview.config(text=format_str)
+            self.string_format_preview.config(
+                text=self.build_format_string(*self._format_preview_args('string')),
+                foreground=self._preview_fg(),
+            )
 
     def update_id_format(self):
-        format_str = self.build_format_string(
-            self.id_format_type.get(),
-            self.id_prefix.get(),
-            self.id_keyword.get(),
-            self.id_suffix.get()
-        )
         if self.id_format_preview:
-            self.id_format_preview.config(text=format_str)
+            self.id_format_preview.config(
+                text=self.build_format_string(*self._format_preview_args('id')),
+                foreground=self._preview_fg(),
+            )
 
     def update_class_format(self):
-        format_str = self.build_format_string(
-            self.class_format_type.get(),
-            self.class_prefix.get(),
-            self.class_keyword.get(),
-            self.class_suffix.get()
-        )
         if self.class_format_preview:
-            self.class_format_preview.config(text=format_str)
+            sample = 'MainActivity'
+            base = self.class_renamer.transform_class_name(
+                sample,
+                self.class_filter_chars.get(),
+                self.class_replace_chars.get(),
+            )
+            formatted = self.build_format_string(*self._format_preview_args('class'))
+            preview = (
+                f'{sample} → {base} → {formatted}'
+                if base != sample or formatted != base
+                else formatted
+            )
+            self.class_format_preview.config(
+                text=preview,
+                foreground=self._preview_fg(),
+            )
 
-    def update_drawable_format_preset(self):
+    def update_all_format_previews(self):
+        """更新所有格式预览（当随机字符配置变更时调用）"""
         self.update_drawable_format()
-
-    def update_layout_format_preset(self):
         self.update_layout_format()
-
-    def update_string_format_preset(self):
         self.update_string_format()
-
-    def update_id_format_preset(self):
         self.update_id_format()
-
-    def update_class_format_preset(self):
         self.update_class_format()
 
-    def set_layout_preset(self, prefix, keyword, suffix):
-        """设置Layout预设"""
-        self.layout_prefix.set(prefix)
-        self.layout_keyword.set(keyword)
-        self.layout_suffix.set(suffix)
-    
+    def get_drawable_format_config(self):
+        return self._make_format_config(
+            self.drawable_order_mode, self.drawable_part_order,
+            self.drawable_prefix, self.drawable_keyword,
+            self.drawable_suffix, self.drawable_number,
+        )
+
+    def get_layout_format_config(self):
+        return self._make_format_config(
+            self.layout_order_mode, self.layout_part_order,
+            self.layout_prefix, self.layout_keyword,
+            self.layout_suffix, self.layout_number,
+        )
+
+    def get_string_format_config(self):
+        return self._make_format_config(
+            self.string_order_mode, self.string_part_order,
+            self.string_prefix, self.string_keyword,
+            self.string_suffix, self.string_number,
+        )
+
+    def get_id_format_config(self):
+        return self._make_format_config(
+            self.id_order_mode, self.id_part_order,
+            self.id_prefix, self.id_keyword,
+            self.id_suffix, self.id_number,
+        )
+
+    def get_class_format_config(self):
+        return self._make_format_config(
+            self.class_order_mode, self.class_part_order,
+            self.class_prefix, self.class_keyword,
+            self.class_suffix, self.class_number,
+        )
+
+    def _format_config_summary(self, config):
+        """导出/日志用的格式描述"""
+        order_desc = (
+            '随机顺序' if config.get('order_mode') == 'random'
+            else '→'.join(FormatHelper.PART_LABELS[k] for k in config['part_order'])
+        )
+        return (
+            f"[{order_desc}] "
+            f"前缀={config['prefix']!r} 关键词={config['keyword']!r} "
+            f"后缀={config['suffix']!r} 序号={config['number']!r}"
+        )
+
     def get_drawable_format(self):
-        """获取Drawable完整格式字符串（用于实际重命名）"""
-        prefix = self.drawable_prefix.get()
-        keyword = self.drawable_keyword.get()
-        suffix = self.drawable_suffix.get()
-        fmt_type = self.drawable_format_type.get()
-        
-        # 直接拼接，不添加下划线，由用户在输入框中自行控制
-        if fmt_type == "prefix_keyword_number":
-            return f"{prefix}{keyword}{suffix}"
-        elif fmt_type == "keyword_prefix_number":
-            return f"{keyword}{prefix}{suffix}"
-        elif fmt_type == "prefix_number_keyword":
-            return f"{prefix}{suffix}{keyword}"
-        else:
-            return f"{prefix}{keyword}{suffix}"
-    
+        return self._format_config_summary(self.get_drawable_format_config())
+
     def get_layout_format(self):
-        """获取Layout完整格式字符串（用于实际重命名）"""
-        prefix = self.layout_prefix.get()
-        keyword = self.layout_keyword.get()
-        suffix = self.layout_suffix.get()
-        fmt_type = self.layout_format_type.get()
-        
-        # 直接拼接，不添加下划线，由用户在输入框中自行控制
-        if fmt_type == "prefix_keyword_number":
-            return f"{prefix}{keyword}{suffix}"
-        elif fmt_type == "keyword_prefix_number":
-            return f"{keyword}{prefix}{suffix}"
-        elif fmt_type == "prefix_number_keyword":
-            return f"{prefix}{suffix}{keyword}"
-        else:
-            return f"{prefix}{keyword}{suffix}"
+        return self._format_config_summary(self.get_layout_format_config())
 
     def get_string_format(self):
-        """获取String完整格式字符串（用于实际重命名）"""
-        prefix = self.string_prefix.get()
-        keyword = self.string_keyword.get()
-        suffix = self.string_suffix.get()
-        fmt_type = self.string_format_type.get()
-        
-        # 直接拼接，不添加下划线，由用户在输入框中自行控制
-        if fmt_type == "prefix_keyword_number":
-            return f"{prefix}{keyword}{suffix}"
-        elif fmt_type == "keyword_prefix_number":
-            return f"{keyword}{prefix}{suffix}"
-        elif fmt_type == "prefix_number_keyword":
-            return f"{prefix}{suffix}{keyword}"
-        else:
-            return f"{prefix}{keyword}{suffix}"
+        return self._format_config_summary(self.get_string_format_config())
 
     def get_id_format(self):
-        """获取ID完整格式字符串（用于实际重命名）"""
-        prefix = self.id_prefix.get()
-        keyword = self.id_keyword.get()
-        suffix = self.id_suffix.get()
-        fmt_type = self.id_format_type.get()
-        
-        # 直接拼接，不添加下划线，由用户在输入框中自行控制
-        if fmt_type == "prefix_keyword_number":
-            return f"{prefix}{keyword}{suffix}"
-        elif fmt_type == "keyword_prefix_number":
-            return f"{keyword}{prefix}{suffix}"
-        elif fmt_type == "prefix_number_keyword":
-            return f"{prefix}{suffix}{keyword}"
-        else:
-            return f"{prefix}{keyword}{suffix}"
-    
+        return self._format_config_summary(self.get_id_format_config())
+
     def get_class_format(self):
-        """获取类名完整格式字符串（用于实际重命名）"""
-        prefix = self.class_prefix.get()
-        keyword = self.class_keyword.get()
-        suffix = self.class_suffix.get()
-        fmt_type = self.class_format_type.get()
-        
-        # 直接拼接，不添加下划线，由用户在输入框中自行控制
-        if fmt_type == "prefix_keyword_number":
-            return f"{prefix}{keyword}{suffix}"
-        elif fmt_type == "keyword_prefix_number":
-            return f"{keyword}{prefix}{suffix}"
-        elif fmt_type == "prefix_number_keyword":
-            return f"{prefix}{suffix}{keyword}"
-        else:
-            return f"{prefix}{keyword}{suffix}"
+        return self._format_config_summary(self.get_class_format_config())
     
     def create_preview_widgets(self, parent, resource_type):
         """创建预览区域组件"""
@@ -1376,6 +1164,7 @@ class AndroidResourceRenamerGUI:
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
         self.log_text.see(tk.END)
+        self._sync_editor_scrollbar(self.log_text)
         self.root.update_idletasks()
     
     def browse_project(self):
@@ -1401,12 +1190,237 @@ class AndroidResourceRenamerGUI:
                 self.module_selection.set(self.modules[0])
             self.scan_files()
     
+    def _build_usage_toolbar(self, parent, resource_type):
+        """左侧列表上方：检测使用情况 / 删除未使用"""
+        bar = tk.Frame(parent, bg=self._bg('sidebar'))
+        bar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Button(
+            bar, text='检测使用情况',
+            command=lambda t=resource_type: self.check_resource_usage(t),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(
+            bar, text='删除未使用',
+            command=lambda t=resource_type: self.delete_unused_resources(t),
+        ).pack(side=tk.LEFT)
+        label = ttk.Label(bar, text='', font=('Segoe UI', 8), style='Dim.TLabel')
+        label.pack(side=tk.LEFT, padx=(8, 0))
+        if not hasattr(self, '_usage_summary_labels'):
+            self._usage_summary_labels = {}
+        self._usage_summary_labels[resource_type] = label
+
+    def _clear_usage_status(self, resource_type=None):
+        types = [resource_type] if resource_type else ('drawable', 'layout', 'string')
+        for t in types:
+            self._usage_status[t].clear()
+            self._usage_unused[t].clear()
+            if hasattr(self, '_usage_summary_labels') and t in self._usage_summary_labels:
+                self._usage_summary_labels[t].config(text='')
+
+    def _usage_unused_fg(self):
+        return '#f48771' if self.theme_mode.get() == 'Dark' else '#c72e2e'
+
+    def check_resource_usage(self, resource_type):
+        """检测当前类型资源的使用情况（后台线程）"""
+        project_path = self.project_path.get()
+        if not project_path:
+            messagebox.showwarning('警告', '请先选择项目路径')
+            return
+        if resource_type == 'drawable' and not self.drawable_files:
+            messagebox.showinfo('提示', '请先扫描项目（选择项目后会自动扫描）')
+            return
+        if resource_type == 'layout' and not self.layout_files:
+            messagebox.showinfo('提示', '请先扫描项目')
+            return
+        if resource_type == 'string' and not self.string_entries:
+            messagebox.showinfo('提示', '请先扫描项目')
+            return
+
+        self.status_var.set(f'正在检测 {resource_type} 使用情况…')
+        self.log(f'开始检测 {self._usage_type_label(resource_type)} 使用情况…')
+
+        def worker():
+            try:
+                used, unused = self._run_usage_check(resource_type, project_path)
+                self.root.after(0, lambda: self._on_usage_check_done(resource_type, used, unused))
+            except Exception as exc:
+                self.root.after(0, lambda: self._on_usage_check_error(resource_type, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _usage_type_label(self, resource_type):
+        return {'drawable': '资源(Drawable)', 'layout': '布局', 'string': '字符'}.get(
+            resource_type, resource_type,
+        )
+
+    def _run_usage_check(self, resource_type, project_path):
+        if resource_type == 'drawable':
+            return self.usage_checker.check_drawables(
+                project_path, self.drawable_files,
+            )
+        if resource_type == 'layout':
+            return self.usage_checker.check_layouts(
+                project_path, self.layout_files,
+            )
+        names = list(dict.fromkeys(e[0] for e in self.string_entries))
+        return self.usage_checker.check_strings(
+            project_path, names, self.string_sources,
+        )
+
+    def _on_usage_check_done(self, resource_type, used, unused):
+        self._usage_status[resource_type] = {}
+        for name in used:
+            self._usage_status[resource_type][name] = True
+        for name in unused:
+            self._usage_status[resource_type][name] = False
+        self._usage_unused[resource_type] = dict(unused)
+
+        self._refresh_resource_listbox(resource_type)
+        summary = f'已使用 {len(used)}，未使用 {len(unused)}'
+        if hasattr(self, '_usage_summary_labels'):
+            self._usage_summary_labels[resource_type].config(text=summary)
+        self.log(f'{self._usage_type_label(resource_type)} 检测完成：{summary}')
+        self.status_var.set(summary)
+
+    def _on_usage_check_error(self, resource_type, exc):
+        self.log(f'检测失败: {exc}', 'ERROR')
+        messagebox.showerror('错误', f'检测使用情况失败：{exc}')
+        self.status_var.set('检测失败')
+
+    def _refresh_resource_listbox(self, resource_type):
+        unused_fg = self._usage_unused_fg()
+        normal_fg = self._fg('listbox')
+
+        if resource_type == 'drawable':
+            lb = self.drawable_listbox
+            lb.delete(0, tk.END)
+            status = self._usage_status.get('drawable', {})
+            for file_path in self.drawable_files:
+                stem = file_path.stem
+                label = file_path.name
+                if stem in status:
+                    label = ('[未使用] ' if not status[stem] else '') + label
+                lb.insert(tk.END, label)
+                if stem in status and not status[stem]:
+                    lb.itemconfig(tk.END, fg=unused_fg)
+                else:
+                    lb.itemconfig(tk.END, fg=normal_fg)
+            n_unused = sum(1 for v in status.values() if v is False)
+            self.drawable_count_label.config(
+                text=f'共 {len(self.drawable_files)} 个文件'
+                + (f'，未使用 {n_unused}' if status else ''),
+            )
+        elif resource_type == 'layout':
+            lb = self.layout_listbox
+            lb.delete(0, tk.END)
+            status = self._usage_status.get('layout', {})
+            for file_path in self.layout_files:
+                stem = file_path.stem
+                label = file_path.name
+                if stem in status:
+                    label = ('[未使用] ' if not status[stem] else '') + label
+                lb.insert(tk.END, label)
+                if stem in status and not status[stem]:
+                    lb.itemconfig(tk.END, fg=unused_fg)
+                else:
+                    lb.itemconfig(tk.END, fg=normal_fg)
+            n_unused = sum(1 for v in status.values() if v is False)
+            self.layout_count_label.config(
+                text=f'共 {len(self.layout_files)} 个文件'
+                + (f'，未使用 {n_unused}' if status else ''),
+            )
+        elif resource_type == 'string':
+            lb = self.string_listbox
+            lb.delete(0, tk.END)
+            status = self._usage_status.get('string', {})
+            for name, preview in self.string_entries:
+                line = f'{name}  |  {preview}' if preview else name
+                if name in status:
+                    line = ('[未使用] ' if not status[name] else '') + line
+                lb.insert(tk.END, line)
+                if name in status and not status[name]:
+                    lb.itemconfig(tk.END, fg=unused_fg)
+                else:
+                    lb.itemconfig(tk.END, fg=normal_fg)
+            n_unused = sum(1 for v in status.values() if v is False)
+            self.string_count_label.config(
+                text=f'共 {len(self.string_entries)} 条'
+                + (f'，未使用 {n_unused}' if status else ''),
+            )
+
+    def delete_unused_resources(self, resource_type):
+        """一键删除未使用的资源（需先检测）"""
+        unused = self._usage_unused.get(resource_type) or {}
+        if not unused:
+            if not self._usage_status.get(resource_type):
+                messagebox.showinfo('提示', '请先点击「检测使用情况」')
+            else:
+                messagebox.showinfo('提示', '没有检测到未使用的资源')
+            return
+
+        label = self._usage_type_label(resource_type)
+        names = sorted(unused.keys())
+        preview = '\n'.join(names[:15])
+        if len(names) > 15:
+            preview += f'\n… 等共 {len(names)} 项'
+
+        file_count = sum(len(paths) for paths in unused.values())
+        if not messagebox.askyesno(
+            '确认删除',
+            f'将删除 {len(names)} 个未使用的{label}资源（{file_count} 个文件/条目）：\n\n'
+            f'{preview}\n\n此操作不可撤销，请确保已备份项目。',
+        ):
+            return
+
+        try:
+            deleted_count = self._execute_delete_unused(resource_type, unused)
+            self._clear_usage_status(resource_type)
+            self.log(f'已删除 {deleted_count} 个未使用{label}相关文件/条目')
+            messagebox.showinfo('完成', f'已删除 {deleted_count} 项，正在重新扫描…')
+            self.scan_files()
+            if resource_type == 'drawable':
+                self._switch_left_view('资源')
+            elif resource_type == 'layout':
+                self._switch_left_view('布局')
+            elif resource_type == 'string':
+                self._switch_left_view('字符')
+        except Exception as exc:
+            self.log(f'删除失败: {exc}', 'ERROR')
+            messagebox.showerror('错误', f'删除失败：\n{exc}')
+
+    def _execute_delete_unused(self, resource_type, unused_map):
+        if resource_type == 'drawable':
+            paths = []
+            for paths_list in unused_map.values():
+                paths.extend(paths_list)
+            deleted = self.usage_checker.delete_drawable_files(paths)
+            for stem in list(unused_map.keys()):
+                self.drawable_mapping.pop(stem, None)
+            return len(deleted)
+        if resource_type == 'layout':
+            paths = []
+            for paths_list in unused_map.values():
+                paths.extend(paths_list)
+            deleted = self.usage_checker.delete_layout_files(paths)
+            for stem in list(unused_map.keys()):
+                self.layout_mapping.pop(stem, None)
+            return len(deleted)
+        if resource_type == 'string':
+            removed = self.usage_checker.remove_strings_from_xml(
+                self.string_sources, list(unused_map.keys()),
+            )
+            for name in unused_map:
+                self.string_mapping.pop(name, None)
+            return len(removed)
+        return 0
+
     def scan_files(self):
         """扫描项目中的资源文件"""
         project_path = self.project_path.get()
         if not project_path:
             messagebox.showwarning("警告", "请先选择项目路径")
             return
+
+        self._clear_usage_status()
 
         # 发现模块并更新模块列表（以便在不同调用场景下保持同步）
         self.discover_modules()
@@ -1449,11 +1463,11 @@ class AndroidResourceRenamerGUI:
         
         # 更新计数
         if hasattr(self, 'drawable_count_label'):
-            self.drawable_count_label.config(text=f"({len(self.drawable_files)})")
+            self.drawable_count_label.config(text=f'共 {len(self.drawable_files)} 个文件')
         if hasattr(self, 'layout_count_label'):
-            self.layout_count_label.config(text=f"({len(self.layout_files)})")
+            self.layout_count_label.config(text=f'共 {len(self.layout_files)} 个文件')
         if hasattr(self, 'string_count_label'):
-            self.string_count_label.config(text=f"({len(self.string_entries)})")
+            self.string_count_label.config(text=f'共 {len(self.string_entries)} 条')
         if hasattr(self, 'class_count_label'):
             self.class_count_label.config(text=f"共 {len(self.class_files)} 个类")
         
@@ -1482,6 +1496,7 @@ class AndroidResourceRenamerGUI:
         """扫描 values/strings.xml 并解析其中的 <string name="..."> 数据"""
         self.string_files.clear()
         self.string_entries.clear()
+        self.string_sources.clear()
         selected = self.module_selection.get() if hasattr(self, 'module_selection') else '全部模块'
         res_paths = []
         if selected == '全部模块':
@@ -1507,6 +1522,7 @@ class AndroidResourceRenamerGUI:
                                     text = (elem.text or '').strip()
                                     preview = (text[:50] + '…') if len(text) > 50 else text
                                     self.string_entries.append((name, preview))
+                                    self.string_sources[name].append(file_path)
                             except Exception as e:
                                 self.log(f"解析 {file_path} 失败: {e}", "ERROR")
         if hasattr(self, 'string_listbox'):
@@ -1584,9 +1600,25 @@ class AndroidResourceRenamerGUI:
         # 如果用户输入的是固定文本，不需要提取
         return filename
     
-    def generate_random_string(self, length=4):
+    def generate_random_string(self, length=None):
         """生成随机字符串"""
-        return ''.join(random.choices(string.ascii_lowercase, k=length))
+        if length is None:
+            length = self.random_length.get()
+        
+        # 构建字符集
+        char_set = ""
+        if self.random_include_lowercase.get():
+            char_set += string.ascii_lowercase
+        if self.random_include_uppercase.get():
+            char_set += string.ascii_uppercase
+        if self.random_include_digits.get():
+            char_set += string.digits
+        
+        # 如果没有任何字符类型被选中，默认使用小写字母
+        if not char_set:
+            char_set = string.ascii_lowercase
+        
+        return ''.join(random.choices(char_set, k=length))
     
     def generate_mapping(self):
         """在后台线程生成当前类型的映射，避免界面无响应"""
@@ -1597,24 +1629,24 @@ class AndroidResourceRenamerGUI:
                 messagebox.showwarning("警告", "未扫描到 drawable 文件，请先扫描")
                 return
             files_snapshot = list(self.drawable_files)
-            format_string = self.get_drawable_format()
+            format_config = self.get_drawable_format_config()
         elif target_type == "layout":
             if not self.layout_files:
                 messagebox.showwarning("警告", "未扫描到 layout 文件，请先扫描")
                 return
             files_snapshot = list(self.layout_files)
-            format_string = self.get_layout_format()
+            format_config = self.get_layout_format_config()
         elif target_type == "string":
             if not self.string_files:
                 messagebox.showwarning("警告", "未扫描到 strings.xml，请先扫描")
                 return
-            format_string = self.get_string_format()
+            format_config = self.get_string_format_config()
             files_snapshot = None
         elif target_type == "id":
             if not self.id_entries:
                 messagebox.showwarning("警告", "未扫描到 ID（@+id/...），请先扫描")
                 return
-            format_string = self.get_id_format()
+            format_config = self.get_id_format_config()
             entries_snapshot = list(self.id_entries)
             files_snapshot = None
         else:  # class
@@ -1622,8 +1654,9 @@ class AndroidResourceRenamerGUI:
                 messagebox.showwarning("警告", "未扫描到 Java 类文件，请先扫描")
                 return
             files_snapshot = list(self.class_files)
-            format_string = self.get_class_format()
+            format_config = self.get_class_format_config()
             filter_chars = self.class_filter_chars.get()
+            replace_chars = self.class_replace_chars.get()
 
         self.status_var.set("正在生成映射...")
         self.root.update_idletasks()
@@ -1631,15 +1664,17 @@ class AndroidResourceRenamerGUI:
         def run():
             try:
                 if target_type == "drawable":
-                    mapping = self.renamer.generate_mapping(files_snapshot, format_string)
+                    mapping = self.renamer.generate_mapping(files_snapshot, format_config, self)
                 elif target_type == "layout":
-                    mapping = self.renamer.generate_mapping(files_snapshot, format_string)
+                    mapping = self.renamer.generate_mapping(files_snapshot, format_config, self)
                 elif target_type == "string":
-                    mapping = self.renamer.generate_string_mapping(self.string_files, format_string)
+                    mapping = self.renamer.generate_string_mapping(self.string_files, format_config, self)
                 elif target_type == "id":
-                    mapping = self._generate_id_mapping_fast(format_string, entries_snapshot)
+                    mapping = self._generate_id_mapping_fast(format_config, entries_snapshot)
                 else:  # class
-                    mapping = self.class_renamer.generate_class_mapping(files_snapshot, format_string, filter_chars)
+                    mapping = self.class_renamer.generate_class_mapping(
+                        files_snapshot, format_config, filter_chars, replace_chars
+                    )
                 self.root.after(0, lambda: self._on_generate_mapping_done(target_type, mapping))
             except Exception as e:
                 self.root.after(0, lambda: self._on_generate_mapping_error(target_type, str(e)))
@@ -1668,7 +1703,7 @@ class AndroidResourceRenamerGUI:
         self.status_var.set("就绪")
         messagebox.showerror("错误", f"生成映射失败：{err_msg}")
 
-    def _generate_id_mapping_fast(self, format_string, entries=None):
+    def _generate_id_mapping_fast(self, format_config, entries=None):
         """纯计算生成 ID 映射（不操作 UI，可在后台线程调用）"""
         if entries is None:
             entries = self.id_entries
@@ -1678,11 +1713,10 @@ class AndroidResourceRenamerGUI:
             counter = idx
             while True:
                 random_str = self.generate_random_string()
-                try:
-                    new_name = format_string.format(name=old_name, number=counter, random=random_str)
-                except Exception:
-                    new_name = format_string.replace("{name}", old_name).replace("{number}", str(counter)).replace("{random}", random_str)
-                if new_name not in used_names:
+                new_name = FormatHelper.build_name(
+                    format_config, old_name, counter, random_str, rng=random
+                )
+                if new_name and new_name not in used_names:
                     break
                 counter += 1
             mapping[old_name] = new_name
@@ -1757,7 +1791,9 @@ class AndroidResourceRenamerGUI:
         lines = [f"{k} = {source[k]}" for k in sorted(source.keys())]
         if lines:
             self.mapping_text.insert(tk.END, "\n".join(lines) + "\n")
-    
+        self._sync_editor_scrollbar(self.mapping_text)
+        self._sync_line_numbers(self.mapping_text)
+
     def clear_mapping(self, resource_type):
         """清空映射"""
         if resource_type == "drawable":
@@ -2206,98 +2242,106 @@ class AndroidResourceRenamerGUI:
         return rules
 
     def update_drawable_references(self):
-        """更新drawable引用"""
-        return self.apply_replacements(self._get_drawable_replace_rules())
+        return self.apply_replacements(
+            self._get_drawable_replace_rules(),
+            search_needles=list(self.drawable_mapping.keys()),
+        )
 
     def update_layout_references(self):
-        """更新layout引用"""
-        return self.apply_replacements(self._get_layout_replace_rules())
+        return self.apply_replacements(
+            self._get_layout_replace_rules(),
+            search_needles=list(self.layout_mapping.keys()),
+        )
 
     def update_string_references(self):
-        return self.apply_replacements(self._get_string_replace_rules())
+        return self.apply_replacements(
+            self._get_string_replace_rules(),
+            search_needles=list(self.string_mapping.keys()),
+        )
 
     def update_id_references(self):
-        return self.apply_replacements(self._get_id_replace_rules())
-    
-    def apply_replacements(self, replace_rules):
-        """应用替换规则到所有相关文件（在后台线程中调用）- 改进版，避免误匹配"""
+        return self.apply_replacements(
+            self._get_id_replace_rules(),
+            search_needles=list(self.id_mapping.keys()),
+        )
+
+    def apply_replacements(self, replace_rules, search_needles=None):
+        """应用替换规则到项目文件（后台线程调用，已做性能优化）"""
         if not replace_rules:
             return 0
-        
-        updated_files = []
+
         project_path = Path(self.project_path.get())
-        patterns = ['**/*.java', '**/*.kt', '**/*.xml', '**/*.gradle']
-        
-        # 预编译所有正则表达式以提高性能
+        if not project_path.exists():
+            return 0
+
         compiled_rules = []
         for old_pattern, new_pattern in replace_rules:
             try:
                 compiled_rules.append((re.compile(old_pattern), new_pattern))
             except re.error as e:
-                self.root.after(0, lambda p=old_pattern, err=e: self.log(f"正则表达式编译失败: {p} - {err}", "ERROR"))
-                continue
-        
-        # 收集所有需要处理的文件
-        all_files = []
-        for pattern in patterns:
-            for file_path in project_path.rglob(pattern):
-                if 'build' in file_path.parts or '.idea' in file_path.parts or '.gradle' in file_path.parts:
-                    continue
-                all_files.append(file_path)
-        
+                self.root.after(
+                    0,
+                    lambda p=old_pattern, err=e: self.log(
+                        f"正则表达式编译失败: {p} - {err}", "ERROR"
+                    ),
+                )
+        if not compiled_rules:
+            return 0
+
+        needles = set(search_needles or [])
+        if not needles:
+            for pattern, _ in replace_rules:
+                token = pattern.replace(r'\b', '').replace('\\', '')[:32]
+                if token and not token.startswith('('):
+                    needles.add(token.split('.')[-1].split('/')[0].strip('^$'))
+
+        all_files = FileHelper.collect_project_files(project_path)
         total_files = len(all_files)
         self.root.after(0, lambda: self.log(f"开始更新引用，共 {total_files} 个文件..."))
-        
-        # 处理文件
+
+        updated_count = 0
+        preview = self.preview_mode.get()
+
         for idx, file_path in enumerate(all_files, 1):
-            # 每处理10个文件更新一次进度
-            if idx % 10 == 0 or idx == total_files:
+            if idx == 1 or idx % 50 == 0 or idx == total_files:
                 progress = f"正在更新引用... ({idx}/{total_files})"
                 self.root.after(0, lambda p=progress: self.status_var.set(p))
-            
+
             try:
-                # 读取文件内容
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                # 应用替换规则
-                new_content = content
-                changes_made = False
-                
-                for compiled_pattern, new_pattern in compiled_rules:
-                    try:
-                        replaced_content = compiled_pattern.sub(new_pattern, new_content)
-                        if replaced_content != new_content:
-                            changes_made = True
-                            new_content = replaced_content
-                    except Exception as e:
-                        # 单个规则失败不影响其他规则
-                        continue
-                
-                # 如果有变化，写入文件
-                if changes_made:
-                    if not self.preview_mode.get():
-                        # 创建备份（可选）
-                        # backup_path = file_path.with_suffix(file_path.suffix + '.bak')
-                        # shutil.copy2(file_path, backup_path)
-                        
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(new_content)
-                    
-                    updated_files.append(str(file_path))
-                    self.root.after(0, lambda fp=file_path: self.log(f"更新引用: {fp.name}"))
-                    
+                content = file_path.read_text(encoding='utf-8')
             except UnicodeDecodeError:
-                # 跳过二进制文件
                 continue
-            except IOError as e:
-                self.root.after(0, lambda fp=file_path, err=e: self.log(f"读取文件失败 {fp}: {err}", "ERROR"))
+            except OSError as e:
+                self.root.after(
+                    0,
+                    lambda fp=file_path, err=e: self.log(f"读取失败 {fp.name}: {err}", "ERROR"),
+                )
                 continue
-            except Exception as e:
-                self.root.after(0, lambda fp=file_path, err=e: self.log(f"处理文件失败 {fp}: {err}", "ERROR"))
+
+            if needles and not ReferenceUpdater.may_need_update(content, needles):
                 continue
-        
-        return len(updated_files)
+
+            new_content = ReferenceUpdater.apply_compiled_rules(content, compiled_rules)
+            if new_content == content:
+                continue
+
+            if not preview:
+                try:
+                    file_path.write_text(new_content, encoding='utf-8')
+                except OSError as e:
+                    self.root.after(
+                        0,
+                        lambda fp=file_path, err=e: self.log(f"写入失败 {fp.name}: {err}", "ERROR"),
+                    )
+                    continue
+
+            updated_count += 1
+
+        self.root.after(
+            0,
+            lambda n=updated_count: self.log(f"引用更新完成，共修改 {n} 个文件"),
+        )
+        return updated_count
     
     def execute_rename(self):
         """执行重命名操作（仅执行当前选中的映射类型）"""
@@ -2362,7 +2406,19 @@ class AndroidResourceRenamerGUI:
             
             def run_replacements():
                 try:
-                    updated_count = self.apply_replacements(replace_rules)
+                    if res_type == "class":
+                        def on_progress(done, total):
+                            msg = f"正在更新类引用... ({done}/{total})"
+                            self.root.after(0, lambda m=msg: self.status_var.set(m))
+
+                        updated_count = self.class_renamer.update_all_class_references(
+                            Path(self.project_path.get()),
+                            self.class_mapping,
+                            preview_mode=self.preview_mode.get(),
+                            progress_callback=on_progress,
+                        )
+                    else:
+                        updated_count = self.apply_replacements(replace_rules)
                     self.root.after(0, lambda: self._on_replacements_done(type_name, total_renamed, updated_count))
                 except Exception as e:
                     self.root.after(0, lambda: self._on_replacements_error(str(e)))
@@ -2408,31 +2464,53 @@ class AndroidResourceRenamerGUI:
                 except Exception as e:
                     self.log(f"验证失败: {e}", "ERROR")
             
-            # 重新扫描文件
-            self.log("正在重新扫描文件...")
-            self.scan_files()
-            self.log("重新扫描完成")
-        
+            self.log("正在重新扫描...")
+            self.root.after(0, self._run_rescan)
+
         self.log("=" * 50)
         self.status_var.set("就绪")
-        
-        # 根据验证结果显示不同的消息
+        if self.preview_mode.get():
+            messagebox.showinfo(
+                "预览完成",
+                f"【{type_name}】预览完成（未写入文件）\n"
+                f"将重命名: {total_renamed}\n将更新引用: {updated_count}",
+            )
+        else:
+            self._show_rename_done_message(
+                type_name, total_renamed, updated_count, verification_issues
+            )
+
+    def _run_rescan(self):
+        try:
+            self.scan_files()
+            self.log("重新扫描完成")
+        except Exception as e:
+            self.log(f"重新扫描失败: {e}", "ERROR")
+
+    def _show_rename_done_message(self, type_name, total_renamed, updated_count, verification_issues):
         if type_name == "类名(Class)" and verification_issues:
-            messagebox.showwarning("完成（有警告）", 
+            messagebox.showwarning(
+                "完成（有警告）",
                 f"【{type_name}】操作完成！\n"
                 f"重命名: {total_renamed}\n"
                 f"更新引用: {updated_count}\n\n"
                 f"⚠️ 发现 {len(verification_issues)} 处未更新的引用\n"
-                f"请查看日志获取详细信息")
+                f"请查看日志获取详细信息",
+            )
         elif type_name == "类名(Class)":
-            messagebox.showinfo("完成", 
+            messagebox.showinfo(
+                "完成",
                 f"【{type_name}】操作完成！\n"
                 f"重命名: {total_renamed}\n"
                 f"更新引用: {updated_count}\n\n"
-                f"✅ 验证通过：所有引用已成功更新")
+                f"✅ 验证通过：所有引用已成功更新",
+            )
         else:
-            messagebox.showinfo("完成", f"【{type_name}】操作完成！\n重命名: {total_renamed}\n更新引用: {updated_count}")
-    
+            messagebox.showinfo(
+                "完成",
+                f"【{type_name}】操作完成！\n重命名: {total_renamed}\n更新引用: {updated_count}",
+            )
+
     def _auto_export_mapping(self):
         """自动导出当前类型的映射表到项目目录"""
         try:

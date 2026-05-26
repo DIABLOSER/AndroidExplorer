@@ -37,42 +37,109 @@ class ClassRenamer:
         
         return java_files
     
-    def filter_class_name(self, class_name, filter_chars):
-        """从类名中过滤指定字符"""
-        if not filter_chars:
+    def transform_class_name(self, class_name, filter_chars, replace_chars):
+        """按「过滤字符 + 替换字符」处理类名。
+
+        - 过滤字符：逗号分隔，要从类名中处理的子串（如 Activity,Fragment）
+        - 替换字符：与过滤项一一对应的替换结果；仅写一项则全部过滤项共用；
+          留空则删除对应过滤子串。
+        - 若未填过滤字符、仅填替换规则，则仍支持 源->目标 写法（兼容旧用法）。
+        """
+        filter_chars = (filter_chars or '').strip()
+        replace_chars = (replace_chars or '').strip()
+
+        if not filter_chars and not replace_chars:
             return class_name
-        
-        filtered_name = class_name
-        for char in filter_chars.split(','):
-            char = char.strip()
-            if char:
-                filtered_name = filtered_name.replace(char, '')
-        
-        return filtered_name if filtered_name else class_name
-    
-    def generate_class_mapping(self, java_files, format_string, filter_chars):
-        """生成类名映射"""
+
+        if not filter_chars:
+            return ClassRenamer.apply_class_name_replacements(
+                self, class_name, replace_chars,
+            )
+
+        filters = [t.strip() for t in filter_chars.split(',') if t.strip()]
+        if not filters:
+            return class_name
+
+        if not replace_chars:
+            result = class_name
+            for token in filters:
+                result = result.replace(token, '')
+            return result if result else class_name
+
+        # 显式 源->目标 多条规则（未与过滤列表配对时）
+        if '->' in replace_chars:
+            parts = [p.strip() for p in replace_chars.split(',') if p.strip()]
+            if parts and all('->' in p for p in parts):
+                return self.apply_class_name_replacements(class_name, replace_chars)
+
+        replaces = [t.strip() for t in replace_chars.split(',') if t.strip()]
+        if len(replaces) == 1:
+            replaces = replaces * len(filters)
+
+        result = class_name
+        for i, token in enumerate(filters):
+            repl = replaces[i] if i < len(replaces) else ''
+            result = result.replace(token, repl)
+        return result if result else class_name
+
+    def filter_class_name(self, class_name, filter_chars):
+        """从类名中移除过滤列表中的子串（无替换内容时）"""
+        return self.transform_class_name(class_name, filter_chars, '')
+
+    def apply_class_name_replacements(self, class_name, replace_rules):
+        """仅按 源->目标 规则替换（未指定过滤字符时）"""
+        if not replace_rules:
+            return class_name
+        result = class_name
+        for rule in replace_rules.split(','):
+            rule = rule.strip()
+            if not rule:
+                continue
+            if '->' in rule:
+                old, new = rule.split('->', 1)
+                old, new = old.strip(), new.strip()
+            else:
+                old, new = rule, ''
+            if old:
+                result = result.replace(old, new)
+        return result if result else class_name
+
+    def generate_class_mapping(self, java_files, format_input, filter_chars='', replace_chars=''):
+        """生成类名映射（先按过滤/替换处理类名，再套用命名格式）"""
+        from utils.format_helper import FormatHelper
+        import random as rnd
+        import string
+
         mapping = OrderedDict()
         existing_names = set()
-        
+        need_random = FormatHelper.config_uses_random_placeholder(format_input)
+
         for java_file in java_files:
             old_class_name = java_file.stem
-            filtered_name = self.filter_class_name(old_class_name, filter_chars)
-            
+            base_name = self.transform_class_name(
+                old_class_name, filter_chars, replace_chars,
+            )
+
             counter = 1
             while True:
-                try:
-                    new_class_name = format_string.format(name=filtered_name, number=counter)
-                except (KeyError, ValueError):
-                    new_class_name = format_string.replace('{name}', filtered_name).replace('{number}', str(counter))
-                
-                if new_class_name not in existing_names:
+                random_str = (
+                    ''.join(rnd.choices(string.ascii_lowercase, k=4))
+                    if need_random else ''
+                )
+                new_class_name = FormatHelper.build_name(
+                    format_input, base_name, counter, random_str, rng=rnd
+                )
+                if new_class_name and new_class_name not in existing_names:
                     break
                 counter += 1
-            
-            mapping[old_class_name] = new_class_name
-            existing_names.add(new_class_name)
-        
+                if counter > 200000:
+                    new_class_name = None
+                    break
+
+            if new_class_name:
+                mapping[old_class_name] = new_class_name
+                existing_names.add(new_class_name)
+
         return mapping
     
     def get_class_package(self, java_file):
@@ -89,25 +156,186 @@ class ClassRenamer:
         
         return None
     
+    def replace_class_refs_in_content(self, content, mapping):
+        """在单个文件内容中更新类名引用（按旧名长度降序，避免短名误伤长名）"""
+        if not mapping or not content:
+            return content
+        sorted_items = sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True)
+        for old_name, new_name in sorted_items:
+            if old_name == new_name or old_name not in content:
+                continue
+            content = self._replace_single_class_refs(content, old_name, new_name)
+        return content
+
+    def _replace_single_class_refs(self, content, old_name, new_name):
+        """将单个旧类名的各类引用替换为新类名"""
+        esc = re.escape(old_name)
+
+        # import / import static
+        content = re.sub(
+            rf'import\s+static\s+((?:[a-zA-Z_]\w*\.)+){esc}\.\*\s*;',
+            rf'import static \1{new_name}.*;',
+            content,
+        )
+        content = re.sub(
+            rf'import\s+static\s+((?:[a-zA-Z_]\w*\.)+){esc}(?=[.;])',
+            rf'import static \1{new_name}',
+            content,
+        )
+        content = re.sub(
+            rf'import\s+((?:[a-zA-Z_]\w*\.)+){esc}\s*;',
+            rf'import \1{new_name};',
+            content,
+        )
+
+        # 完全限定名：com.example.OldName
+        content = re.sub(
+            rf'(\b(?:[a-zA-Z_]\w*\.)+){esc}(?=[.;,\s\)\]>;\[]|$)',
+            rf'\1{new_name}',
+            content,
+        )
+
+        # 限定引用：OldName.member（静态成员、内部类、嵌套类）
+        content = re.sub(rf'(?<![.\w]){esc}(?=\.)', new_name, content)
+
+        # OldName.class
+        content = re.sub(rf'(?<![.\w]){esc}\.class\b', f'{new_name}.class', content)
+
+        # 独立类名（类型、extends、new Foo()、泛型参数等）
+        content = re.sub(rf'(?<![.\w]){esc}(?![.\w])', new_name, content)
+
+        # 注解
+        content = re.sub(rf'@{esc}\b', f'@{new_name}', content)
+
+        return content
+
+    def _replace_class_refs_in_xml(self, content, old_name, new_name):
+        """更新 XML / Manifest 中的类名引用"""
+        esc = re.escape(old_name)
+
+        content = re.sub(
+            rf'android:name="([a-zA-Z0-9_.]*\.)?{esc}"',
+            lambda m: f'android:name="{(m.group(1) or "")}{new_name}"',
+            content,
+        )
+        content = re.sub(rf'android:name="\.{esc}"', f'android:name=".{new_name}"', content)
+
+        content = re.sub(
+            rf'tools:context="([a-zA-Z0-9_.]*\.)?{esc}"',
+            lambda m: f'tools:context="{(m.group(1) or "")}{new_name}"',
+            content,
+        )
+        content = re.sub(rf'tools:context="\.{esc}"', f'tools:context=".{new_name}"', content)
+
+        content = re.sub(
+            rf'(<|</)([a-zA-Z0-9_.]+\.){esc}(?=[\s/>])',
+            rf'\1\2{new_name}',
+            content,
+        )
+        content = re.sub(rf'(<|</){esc}(?=[\s/>])', rf'\1{new_name}', content)
+
+        return content
+
+    def update_all_class_references(
+        self, project_path, mapping, preview_mode=False, progress_callback=None,
+    ):
+        """遍历项目并更新 Java/Kotlin/XML 中的类名引用"""
+        if not mapping:
+            return 0
+
+        from utils.file_helper import FileHelper
+
+        project_path = Path(project_path)
+        sorted_mapping = OrderedDict(
+            sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True)
+        )
+        needles = {old for old, new in sorted_mapping.items() if old != new}
+        suffixes = {'.java', '.kt', '.xml'}
+        all_files = [
+            p for p in FileHelper.collect_project_files(project_path, suffixes)
+            if p.suffix.lower() in suffixes
+        ]
+        total = len(all_files)
+        updated_count = 0
+
+        for idx, file_path in enumerate(all_files, 1):
+            if progress_callback and (idx == 1 or idx % 50 == 0 or idx == total):
+                progress_callback(idx, total)
+
+            try:
+                content = file_path.read_text(encoding='utf-8')
+            except (UnicodeDecodeError, OSError):
+                continue
+
+            if needles and not any(n in content for n in needles):
+                continue
+
+            if file_path.suffix.lower() == '.xml':
+                new_content = content
+                for old_name, new_name in sorted_mapping.items():
+                    if old_name != new_name and old_name in new_content:
+                        new_content = self._replace_class_refs_in_xml(
+                            new_content, old_name, new_name
+                        )
+            else:
+                new_content = self.replace_class_refs_in_content(content, sorted_mapping)
+
+            if new_content == content:
+                continue
+
+            if not preview_mode:
+                file_path.write_text(new_content, encoding='utf-8')
+
+            updated_count += 1
+
+        if updated_count:
+            self.log(f"类名引用已更新 {updated_count} 个文件")
+        return updated_count
+
     def get_class_replace_rules(self, java_files, mapping, project_path):
-        """生成类名替换规则（全面覆盖所有Java/Kotlin引用场景，优化准确性）"""
+        """生成类名替换规则（保留供备份收集；实际替换请用 update_all_class_references）"""
         rules = []
         
         for old_name, new_name in mapping.items():
             escaped_old = re.escape(old_name)
             
+            # 首先，我们需要排除一些常见的情况，避免误替换
+            # 1. 排除变量名（以小写字母开头的标识符）
+            # 2. 排除方法名（后面跟着括号）
+            # 3. 排除字段名（前面有点号但不是类名的情况）
+            
+            # ===== 0. 排除规则（防止误替换） =====
+            # 排除以小写字母开头的标识符（很可能是变量名）
+            # 注意：这个规则不添加到rules中，而是在应用时作为检查
+            
+            # 重要：避免替换变量名
+            # 如果类名以小写字母开头，我们需要特别小心
+            # 但大多数类名以大写字母开头，所以这个问题可能不严重
+            
             # ===== 1. Import 语句（最高优先级，精确匹配） =====
-            # 标准 import
-            rules.append((rf'(?<=import\s)([a-zA-Z0-9_.]+)\.{escaped_old}(?=\s*;)', rf'\1.{new_name}'))
-            # static import
-            rules.append((rf'(?<=import\s+static\s)([a-zA-Z0-9_.]+)\.{escaped_old}(?=\.)', rf'\1.{new_name}'))
-            # 通配符 import
-            rules.append((rf'(?<=import\s)([a-zA-Z0-9_.]+)\.{escaped_old}(?=\.\*\s*;)', rf'\1.{new_name}'))
+            # 标准 import: import com.example.ClassName;
+            rules.append((rf'import\s+([a-zA-Z0-9_.]+\.){escaped_old}\s*;', rf'import \1{new_name};'))
+            # static import: import static com.example.ClassName.*;
+            rules.append((rf'import\s+static\s+([a-zA-Z0-9_.]+\.){escaped_old}\.\*\s*;', rf'import static \1{new_name}.*;'))
+            # static import 方法: import static com.example.ClassName.method;
+            rules.append((rf'import\s+static\s+([a-zA-Z0-9_.]+\.){escaped_old}\.', rf'import static \1{new_name}.'))
+            # 通配符 import: import com.example.*;
+            # 注意：这种导入不需要替换类名，因为类名在通配符中
             
             # ===== 2. Package 和 AndroidManifest.xml =====
             # android:name 属性（Activity/Service/Receiver/Provider）
             rules.append((rf'(?<=android:name=")([a-zA-Z0-9_.]*\.)?{escaped_old}(?=")', rf'\1{new_name}'))
             rules.append((rf'(?<=android:name="\.)({escaped_old})(?=")', rf'{new_name}'))
+            
+            # ===== 2.1 完全限定类名引用（改进版） =====
+            # 处理 com.example.ClassName 这种完整包名的引用
+            # 但避免匹配 com.example.ClassName.method() 这种情况
+            # 只匹配在特定上下文中的完全限定类名
+            rules.append((rf'\b([a-zA-Z0-9_.]+\.){escaped_old}(?=\s*[;,)\]\s]|$)', rf'\1{new_name}'))
+            # 匹配作为类型的完全限定类名：com.example.ClassName variable
+            rules.append((rf'\b([a-zA-Z0-9_.]+\.){escaped_old}(?=\s+[a-zA-Z_][a-zA-Z0-9_]*)', rf'\1{new_name}'))
+            # 匹配在泛型中的完全限定类名：List<com.example.ClassName>
+            rules.append((rf'(?<=<[^<>]*)([a-zA-Z0-9_.]+\.){escaped_old}(?=[^<>]*>)', rf'\1{new_name}'))
             
             # ===== 3. 布局文件中的自定义 View（精确匹配） =====
             # 完整包名的自定义 View 开始标签: <com.example.app.CustomView
@@ -151,8 +379,8 @@ class ClassRenamer:
             rules.append((rf'(?<=\bnew\s){escaped_old}(?=\s*[(<\[])', f'{new_name}'))
             
             # ===== 8. 类型声明（变量、字段、参数）- 改进版 =====
-            # 变量声明: ClassName var = ...
-            rules.append((rf'\b{escaped_old}\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*([=;,)\]])', rf'{new_name} \1\2'))
+            # 变量声明: ClassName var = ... (确保前面是类型位置)
+            rules.append((rf'(?<![a-zA-Z0-9_.])\b{escaped_old}\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*([=;,)\]])', rf'{new_name} \1\2'))
             # 带修饰符的字段: public/private/protected/static/final ClassName field
             rules.append((rf'\b(public|private|protected|static|final|volatile|transient)\s+{escaped_old}\s+', rf'\1 {new_name} '))
             # 多个修饰符: public static ClassName field
@@ -248,14 +476,40 @@ class ClassRenamer:
             rules.append((rf'\b{escaped_old}\.class\b', f'{new_name}.class'))
             
             # ===== 14. 静态成员访问（改进版） =====
-            # ClassName.staticMethod()
-            rules.append((rf'\b{escaped_old}\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', rf'{new_name}.\1('))
-            # ClassName.CONSTANT
-            rules.append((rf'\b{escaped_old}\.([A-Z_][A-Z0-9_]*)\b', rf'{new_name}.\1'))
-            # ClassName.field
-            rules.append((rf'\b{escaped_old}\.([a-z][a-zA-Z0-9_]*)\b', rf'{new_name}.\1'))
-            # ClassName.InnerClass
-            rules.append((rf'\b{escaped_old}\.([A-Z][a-zA-Z0-9_]*)', rf'{new_name}.\1'))
+            # 这个规则需要非常小心，因为ClassName.method()可能被误匹配为variable.method()
+            # 我们只在确定是类名的情况下才替换
+            
+            # 首先，检查前面是否有表明这是类名的上下文
+            # 1. 前面是import、new、extends、implements、instanceof等关键字
+            # 2. 前面是类型声明位置
+            
+            # 更安全的规则：只在特定上下文中替换
+            # 避免替换变量名.方法()的情况
+            
+            # 只在前面是类名上下文的情况下替换
+            # 1. 前面是空白或特定关键字
+            # 2. 或者前面是点号但点号前面是包名
+            
+            # 安全的静态方法调用：包名.ClassName.method()
+            # 只替换前面有包名的情况，避免替换变量名.方法()
+            rules.append((rf'(?<=[a-zA-Z0-9_]\.){escaped_old}\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', rf'{new_name}.\1('))
+            
+            # 安全的常量访问：包名.ClassName.CONSTANT
+            rules.append((rf'(?<=[a-zA-Z0-9_]\.){escaped_old}\.([A-Z_][A-Z0-9_]*)\b', rf'{new_name}.\1'))
+            
+            # 安全的内部类访问：包名.ClassName.InnerClass
+            rules.append((rf'(?<=[a-zA-Z0-9_]\.){escaped_old}\.([A-Z][a-zA-Z0-9_]*)', rf'{new_name}.\1'))
+            
+            # 新增：简单类名的静态访问（但需要更严格的上下文检查）
+            # 只匹配在特定上下文中的简单类名静态访问
+            # 1. 前面是空白或特定关键字（import, new, extends, implements, instanceof, class, interface, enum）
+            # 2. 前面是类型声明位置
+            rules.append((rf'(?<=\b(import|new|extends|implements|instanceof|class|interface|enum|@interface|record)\s+){escaped_old}\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', rf'{new_name}.\2('))
+            rules.append((rf'(?<=\b(public|private|protected|static|final|abstract|synchronized)\s+){escaped_old}\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(', rf'{new_name}.\2('))
+            
+            # 重要：避免替换变量名.方法()的情况
+            # 如果ClassName后面跟着小写字母的方法调用，很可能是变量实例
+            # 我们不应该替换这种情况
             
             # ===== 15. 注解（改进版） =====
             # @ClassName
@@ -402,45 +656,55 @@ class ClassRenamer:
 
     
     def verify_rename_completion(self, project_path, mapping):
-        """验证重命名是否完成（检查是否还有旧类名引用）"""
+        """验证重命名是否完成（单次遍历，按文件聚合）"""
+        from utils.file_helper import FileHelper
+
+        project_path = Path(project_path)
+        check_names = {
+            old: new for old, new in mapping.items() if old != new
+        }
+        if not check_names:
+            return []
+
+        patterns = {
+            name: re.compile(rf'\b{re.escape(name)}\b')
+            for name in check_names
+        }
+        hits_by_name = {name: [] for name in check_names}
+        suffixes = {'.java', '.kt', '.xml'}
+
+        for file_path in FileHelper.collect_project_files(project_path, suffixes):
+            if file_path.suffix.lower() not in suffixes:
+                continue
+            try:
+                content = file_path.read_text(encoding='utf-8')
+            except (UnicodeDecodeError, OSError):
+                continue
+
+            if not any(name in content for name in check_names):
+                continue
+
+            for old_name, pattern in patterns.items():
+                if not pattern.search(content):
+                    continue
+                line_numbers = [
+                    i for i, line in enumerate(content.split('\n'), 1)
+                    if pattern.search(line)
+                ]
+                if line_numbers:
+                    hits_by_name[old_name].append({
+                        'file': str(file_path),
+                        'lines': line_numbers,
+                    })
+
         issues = []
-        
-        for old_name, new_name in mapping.items():
-            # 搜索旧类名
-            found_files = []
-            
-            for pattern in ['**/*.java', '**/*.kt', '**/*.xml']:
-                for file_path in project_path.rglob(pattern):
-                    if 'build' in file_path.parts or '.idea' in file_path.parts:
-                        continue
-                    
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        # 使用词边界匹配，避免误报
-                        if re.search(rf'\b{re.escape(old_name)}\b', content):
-                            # 记录文件和行号
-                            lines = content.split('\n')
-                            line_numbers = []
-                            for i, line in enumerate(lines, 1):
-                                if re.search(rf'\b{re.escape(old_name)}\b', line):
-                                    line_numbers.append(i)
-                            
-                            found_files.append({
-                                'file': str(file_path),
-                                'lines': line_numbers
-                            })
-                    except:
-                        continue
-            
+        for old_name, found_files in hits_by_name.items():
             if found_files:
                 issues.append({
                     'old_name': old_name,
-                    'new_name': new_name,
-                    'files': found_files
+                    'new_name': check_names[old_name],
+                    'files': found_files,
                 })
-        
         return issues
     
     def generate_verification_report(self, issues):

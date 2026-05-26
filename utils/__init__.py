@@ -3,5 +3,6 @@
 
 from .format_helper import FormatHelper
 from .file_helper import FileHelper
+from .reference_updater import ReferenceUpdater
 
-__all__ = ['FormatHelper', 'FileHelper']
+__all__ = ['FormatHelper', 'FileHelper', 'ReferenceUpdater']
