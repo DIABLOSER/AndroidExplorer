@@ -15,7 +15,7 @@
 
 <div class="node">
   <a name="app.py"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/app.py" type="text/plain"><tt>app.py</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/app.py" type="text/plain"><tt>app.py</tt></a>
 <span class="moduletype">Script</span>  <div class="import">
 imports:
     <a href="#_collections_abc">_collections_abc</a>
@@ -1563,6 +1563,7 @@ imported by:
  &#8226;   <a href="#contextlib">contextlib</a>
  &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
  &#8226;   <a href="#dis">dis</a>
  &#8226;   <a href="#email.feedparser">email.feedparser</a>
  &#8226;   <a href="#functools">functools</a>
@@ -1690,12 +1691,13 @@ imported by:
 
 <div class="node">
   <a name="core"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/core/__init__.py" type="text/plain"><tt>core</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/core/__init__.py" type="text/plain"><tt>core</tt></a>
 <span class="moduletype">Package</span>  <div class="import">
 imports:
     <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
  &#8226;   <a href="#core.resource_scanner">core.resource_scanner</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
 
   </div>
   <div class="import">
@@ -1704,6 +1706,7 @@ imported by:
  &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
  &#8226;   <a href="#core.resource_scanner">core.resource_scanner</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
 
   </div>
 
@@ -1711,13 +1714,17 @@ imported by:
 
 <div class="node">
   <a name="core.class_renamer"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/core/class_renamer.py" type="text/plain"><tt>core.class_renamer</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/core/class_renamer.py" type="text/plain"><tt>core.class_renamer</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#collections">collections</a>
  &#8226;   <a href="#core">core</a>
  &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#random">random</a>
  &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#string">string</a>
+ &#8226;   <a href="#utils.file_helper">utils.file_helper</a>
+ &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
 
   </div>
   <div class="import">
@@ -1730,13 +1737,14 @@ imported by:
 
 <div class="node">
   <a name="core.resource_renamer"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/core/resource_renamer.py" type="text/plain"><tt>core.resource_renamer</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/core/resource_renamer.py" type="text/plain"><tt>core.resource_renamer</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#collections">collections</a>
  &#8226;   <a href="#core">core</a>
  &#8226;   <a href="#random">random</a>
  &#8226;   <a href="#string">string</a>
+ &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
  &#8226;   <a href="#xml.etree.ElementTree">xml.etree.ElementTree</a>
 
   </div>
@@ -1750,11 +1758,32 @@ imported by:
 
 <div class="node">
   <a name="core.resource_scanner"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/core/resource_scanner.py" type="text/plain"><tt>core.resource_scanner</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/core/resource_scanner.py" type="text/plain"><tt>core.resource_scanner</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#core">core</a>
  &#8226;   <a href="#pathlib">pathlib</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#core">core</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="core.resource_usage"></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/core/resource_usage.py" type="text/plain"><tt>core.resource_usage</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#collections">collections</a>
+ &#8226;   <a href="#core">core</a>
+ &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#utils.file_helper">utils.file_helper</a>
+ &#8226;   <a href="#xml.etree.ElementTree">xml.etree.ElementTree</a>
 
   </div>
   <div class="import">
@@ -6433,6 +6462,7 @@ imported by:
  &#8226;   <a href="#tkinter">tkinter</a>
  &#8226;   <a href="#tkinter.filedialog">tkinter.filedialog</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
+ &#8226;   <a href="#utils.file_helper">utils.file_helper</a>
  &#8226;   <a href="#xml.sax">xml.sax</a>
  &#8226;   <a href="#xml.sax.saxutils">xml.sax.saxutils</a>
  &#8226;   <a href="#zipfile">zipfile</a>
@@ -6475,6 +6505,7 @@ imported by:
     <a href="#app.py">app.py</a>
  &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_scanner">core.resource_scanner</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
  &#8226;   <a href="#importlib.resources._common">importlib.resources._common</a>
  &#8226;   <a href="#importlib.resources.abc">importlib.resources.abc</a>
@@ -6733,11 +6764,13 @@ imports:
   <div class="import">
 imported by:
     <a href="#app.py">app.py</a>
+ &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
  &#8226;   <a href="#email.generator">email.generator</a>
  &#8226;   <a href="#email.utils">email.utils</a>
  &#8226;   <a href="#statistics">statistics</a>
  &#8226;   <a href="#tempfile">tempfile</a>
+ &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
 
   </div>
 
@@ -6769,6 +6802,7 @@ imported by:
  &#8226;   <a href="#ast">ast</a>
  &#8226;   <a href="#base64">base64</a>
  &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
  &#8226;   <a href="#csv">csv</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
  &#8226;   <a href="#email._encoded_words">email._encoded_words</a>
@@ -7204,6 +7238,7 @@ imports:
   <div class="import">
 imported by:
     <a href="#app.py">app.py</a>
+ &#8226;   <a href="#core.class_renamer">core.class_renamer</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
  &#8226;   <a href="#email._encoded_words">email._encoded_words</a>
  &#8226;   <a href="#email._header_value_parser">email._header_value_parser</a>
@@ -7212,6 +7247,7 @@ imported by:
  &#8226;   <a href="#ntpath">ntpath</a>
  &#8226;   <a href="#nturl2path">nturl2path</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
+ &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
 
   </div>
 
@@ -7561,6 +7597,8 @@ imported by:
  &#8226;   <a href="#tkinter.scrolledtext">tkinter.scrolledtext</a>
  &#8226;   <a href="#tkinter.simpledialog">tkinter.simpledialog</a>
  &#8226;   <a href="#tkinter.ttk">tkinter.ttk</a>
+ &#8226;   <a href="#ui.format_panels">ui.format_panels</a>
+ &#8226;   <a href="#ui.scrollable_frame">ui.scrollable_frame</a>
  &#8226;   <a href="#ui.theme">ui.theme</a>
  &#8226;   <a href="#ui.tooltip">ui.tooltip</a>
 
@@ -7708,6 +7746,8 @@ imports:
 imported by:
     <a href="#app.py">app.py</a>
  &#8226;   <a href="#tkinter">tkinter</a>
+ &#8226;   <a href="#ui.format_panels">ui.format_panels</a>
+ &#8226;   <a href="#ui.scrollable_frame">ui.scrollable_frame</a>
  &#8226;   <a href="#ui.theme">ui.theme</a>
 
   </div>
@@ -7885,16 +7925,20 @@ imported by:
 
 <div class="node">
   <a name="ui"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/ui/__init__.py" type="text/plain"><tt>ui</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/ui/__init__.py" type="text/plain"><tt>ui</tt></a>
 <span class="moduletype">Package</span>  <div class="import">
 imports:
-    <a href="#ui.theme">ui.theme</a>
+    <a href="#ui.format_panels">ui.format_panels</a>
+ &#8226;   <a href="#ui.scrollable_frame">ui.scrollable_frame</a>
+ &#8226;   <a href="#ui.theme">ui.theme</a>
  &#8226;   <a href="#ui.tooltip">ui.tooltip</a>
 
   </div>
   <div class="import">
 imported by:
     <a href="#app.py">app.py</a>
+ &#8226;   <a href="#ui.format_panels">ui.format_panels</a>
+ &#8226;   <a href="#ui.scrollable_frame">ui.scrollable_frame</a>
  &#8226;   <a href="#ui.theme">ui.theme</a>
  &#8226;   <a href="#ui.tooltip">ui.tooltip</a>
 
@@ -7903,8 +7947,45 @@ imported by:
 </div>
 
 <div class="node">
+  <a name="ui.format_panels"></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/ui/format_panels.py" type="text/plain"><tt>ui.format_panels</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#tkinter">tkinter</a>
+ &#8226;   <a href="#tkinter.ttk">tkinter.ttk</a>
+ &#8226;   <a href="#ui">ui</a>
+ &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#ui">ui</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="ui.scrollable_frame"></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/ui/scrollable_frame.py" type="text/plain"><tt>ui.scrollable_frame</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#tkinter">tkinter</a>
+ &#8226;   <a href="#tkinter.ttk">tkinter.ttk</a>
+ &#8226;   <a href="#ui">ui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#ui">ui</a>
+
+  </div>
+
+</div>
+
+<div class="node">
   <a name="ui.theme"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/ui/theme.py" type="text/plain"><tt>ui.theme</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/ui/theme.py" type="text/plain"><tt>ui.theme</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#tkinter">tkinter</a>
@@ -7922,7 +8003,7 @@ imported by:
 
 <div class="node">
   <a name="ui.tooltip"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/ui/tooltip.py" type="text/plain"><tt>ui.tooltip</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/ui/tooltip.py" type="text/plain"><tt>ui.tooltip</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#tkinter">tkinter</a>
@@ -8082,11 +8163,12 @@ imported by:
 
 <div class="node">
   <a name="utils"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/utils/__init__.py" type="text/plain"><tt>utils</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/utils/__init__.py" type="text/plain"><tt>utils</tt></a>
 <span class="moduletype">Package</span>  <div class="import">
 imports:
     <a href="#utils.file_helper">utils.file_helper</a>
  &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
+ &#8226;   <a href="#utils.reference_updater">utils.reference_updater</a>
 
   </div>
   <div class="import">
@@ -8094,6 +8176,7 @@ imported by:
     <a href="#app.py">app.py</a>
  &#8226;   <a href="#utils.file_helper">utils.file_helper</a>
  &#8226;   <a href="#utils.format_helper">utils.format_helper</a>
+ &#8226;   <a href="#utils.reference_updater">utils.reference_updater</a>
 
   </div>
 
@@ -8101,18 +8184,21 @@ imported by:
 
 <div class="node">
   <a name="utils.file_helper"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/utils/file_helper.py" type="text/plain"><tt>utils.file_helper</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/utils/file_helper.py" type="text/plain"><tt>utils.file_helper</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#collections">collections</a>
  &#8226;   <a href="#datetime">datetime</a>
+ &#8226;   <a href="#os">os</a>
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#utils">utils</a>
 
   </div>
   <div class="import">
 imported by:
-    <a href="#utils">utils</a>
+    <a href="#core.class_renamer">core.class_renamer</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
+ &#8226;   <a href="#utils">utils</a>
 
   </div>
 
@@ -8120,11 +8206,32 @@ imported by:
 
 <div class="node">
   <a name="utils.format_helper"></a>
-  <a target="code" href="///C:/Users/Administrator/Desktop/Tools/utils/format_helper.py" type="text/plain"><tt>utils.format_helper</tt></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/utils/format_helper.py" type="text/plain"><tt>utils.format_helper</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#re">re</a>
+    <a href="#random">random</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#string">string</a>
  &#8226;   <a href="#utils">utils</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#core.class_renamer">core.class_renamer</a>
+ &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
+ &#8226;   <a href="#ui.format_panels">ui.format_panels</a>
+ &#8226;   <a href="#utils">utils</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="utils.reference_updater"></a>
+  <a target="code" href="///C:/Users/Administrator/Desktop/AndroidExplorer/AndroidExplorer/utils/reference_updater.py" type="text/plain"><tt>utils.reference_updater</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#utils">utils</a>
 
   </div>
   <div class="import">
@@ -8351,6 +8458,7 @@ imported by:
     <a href="#_elementtree">_elementtree</a>
  &#8226;   <a href="#app.py">app.py</a>
  &#8226;   <a href="#core.resource_renamer">core.resource_renamer</a>
+ &#8226;   <a href="#core.resource_usage">core.resource_usage</a>
  &#8226;   <a href="#xml.etree">xml.etree</a>
  &#8226;   <a href="#xml.etree.ElementInclude">xml.etree.ElementInclude</a>
  &#8226;   <a href="#xml.etree.cElementTree">xml.etree.cElementTree</a>
