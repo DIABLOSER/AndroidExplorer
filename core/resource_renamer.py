@@ -46,7 +46,9 @@ class ResourceRenamer:
             return '{name}' in format_input.get('keyword', '')
         return '{name}' in format_input
 
-    def generate_new_name(self, old_name, format_input, existing_names, app=None):
+    def generate_new_name(
+        self, old_name, format_input, existing_names, app=None, start_counter=1,
+    ):
         """生成新名称（format_input 为配置 dict 或旧版格式字符串）"""
         from utils.format_helper import FormatHelper
 
@@ -58,35 +60,43 @@ class ResourceRenamer:
         used_names = set(existing_names)
         need_random = FormatHelper.config_uses_random_placeholder(format_input)
 
-        for counter in range(1, 200000):
+        for counter in range(start_counter, start_counter + 200000):
             random_str = self.generate_random_string(app=app) if need_random else ''
             new_name = FormatHelper.build_name(
                 format_input, base_name, counter, random_str, rng=random
             )
             if new_name and new_name not in used_names:
-                return new_name
+                return new_name, counter
 
         for _ in range(1000):
             random_str = self.generate_random_string(app=app)
             new_name = FormatHelper.build_name(
-                format_input, base_name, 1, random_str, rng=random
+                format_input, base_name, start_counter, random_str, rng=random
             )
             if new_name and new_name not in used_names:
-                return new_name
+                return new_name, start_counter
 
-        return None
+        return None, start_counter
 
     def generate_mapping(self, files, format_input, app=None):
         """生成文件映射"""
         mapping = OrderedDict()
         existing_names = set()
+        serial_counter = 1
 
         for file_path in files:
             old_name = file_path.stem
-            new_name = self.generate_new_name(old_name, format_input, existing_names, app)
+            new_name, used_counter = self.generate_new_name(
+                old_name,
+                format_input,
+                existing_names,
+                app,
+                start_counter=serial_counter,
+            )
             if new_name:
                 mapping[old_name] = new_name
                 existing_names.add(new_name)
+                serial_counter = max(serial_counter + 1, used_counter + 1)
 
         return mapping
 
@@ -94,6 +104,7 @@ class ResourceRenamer:
         """生成字符串资源映射"""
         mapping = OrderedDict()
         existing_names = set()
+        serial_counter = 1
 
         for file_path in string_files:
             try:
@@ -103,10 +114,17 @@ class ResourceRenamer:
                     old_name = elem.attrib.get('name')
                     if not old_name:
                         continue
-                    new_name = self.generate_new_name(old_name, format_input, existing_names, app)
+                    new_name, used_counter = self.generate_new_name(
+                        old_name,
+                        format_input,
+                        existing_names,
+                        app,
+                        start_counter=serial_counter,
+                    )
                     if new_name:
                         mapping[old_name] = new_name
                         existing_names.add(new_name)
+                        serial_counter = max(serial_counter + 1, used_counter + 1)
             except Exception as e:
                 self.log(f"解析{file_path}失败: {e}", "ERROR")
 

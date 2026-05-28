@@ -24,7 +24,7 @@ from utils import FormatHelper, FileHelper, ReferenceUpdater
 class AndroidResourceRenamerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Android Explorer v3.3")
+        self.root.title("Android Explorer v3.4")
         self.root.geometry("1100x780")
         self.root.minsize(900, 600)
         

@@ -113,6 +113,7 @@ class ClassRenamer:
         mapping = OrderedDict()
         existing_names = set()
         need_random = FormatHelper.config_uses_random_placeholder(format_input)
+        serial_counter = 1
 
         for java_file in java_files:
             old_class_name = java_file.stem
@@ -120,7 +121,7 @@ class ClassRenamer:
                 old_class_name, filter_chars, replace_chars,
             )
 
-            counter = 1
+            counter = serial_counter
             while True:
                 random_str = (
                     ''.join(rnd.choices(string.ascii_lowercase, k=4))
@@ -139,6 +140,7 @@ class ClassRenamer:
             if new_class_name:
                 mapping[old_class_name] = new_class_name
                 existing_names.add(new_class_name)
+                serial_counter = max(serial_counter + 1, counter + 1)
 
         return mapping
     
